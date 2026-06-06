@@ -108,6 +108,7 @@ type SearchInput struct {
 	Since      *int64
 	Until      *int64
 	Limit      int
+	Literal    bool
 }
 
 type SearchResult struct {

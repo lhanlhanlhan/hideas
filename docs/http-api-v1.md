@@ -431,10 +431,13 @@ type       optional trace type name
 since      optional UTC epoch milliseconds, required format
 until      optional UTC epoch milliseconds, required format
 limit      optional result limit
+literal    optional boolean, disables keyword expansion when true
 ```
 
 `since` and `until` must be supplied as UTC Unix timestamps in milliseconds.
 Date strings such as `2026-06-06` are not accepted by the HTTP API.
+
+Search keeps the full query as a literal phrase and, unless `literal=true`, also expands eligible space-separated keyword tokens. Tokens are eligible only when they contain at least one non-ASCII character and are at least two runes long, so pure English, pure numeric, and English-number tokens are not expanded.
 
 Example:
 

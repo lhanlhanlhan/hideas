@@ -528,8 +528,14 @@ func (s *SQLiteStore) Search(in SearchInput) (SearchResult, error) {
 	var where []string
 	var args []interface{}
 	if in.Query != "" {
-		where = append(where, `tr.content LIKE ?`)
-		args = append(args, "%"+in.Query+"%")
+		var parts []string
+		for _, term := range searchTerms(in.Query, in.Literal) {
+			parts = append(parts, `tr.content LIKE ?`)
+			args = append(args, "%"+term+"%")
+		}
+		if len(parts) > 0 {
+			where = append(where, `(`+strings.Join(parts, ` OR `)+`)`)
+		}
 	}
 	if in.TypeName != "" {
 		typeID, err := s.typeIDByName(DomainTraceType, in.TypeName)
@@ -585,6 +591,39 @@ func (s *SQLiteStore) Search(in SearchInput) (SearchResult, error) {
 		res.EntitiesHasMore = more
 	}
 	return res, nil
+}
+
+func searchTerms(query string, literal bool) []string {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil
+	}
+	seen := map[string]bool{query: true}
+	terms := []string{query}
+	if literal {
+		return terms
+	}
+	for _, tok := range strings.Fields(query) {
+		if !searchTokenEligible(tok) || seen[tok] {
+			continue
+		}
+		seen[tok] = true
+		terms = append(terms, tok)
+	}
+	return terms
+}
+
+func searchTokenEligible(tok string) bool {
+	runes := []rune(strings.TrimSpace(tok))
+	if len(runes) < 2 {
+		return false
+	}
+	for _, r := range runes {
+		if r > 127 {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *SQLiteStore) searchEntities(query string, limit int) ([]Entity, bool, error) {

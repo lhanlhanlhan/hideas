@@ -109,6 +109,18 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	if out := mustOK(t, db, "search", "SQLite", "--entity-id", strconvFormat(e1), "--type", "thought", "--format", "json"); !strings.Contains(out, "SQLite") {
 		t.Fatalf("search json output: %s", out)
 	}
+	if out := mustOK(t, db, "add", "KeywordAlpha 记忆系统 命中测试", "--type", "thought"); !strings.Contains(out, "trace") {
+		t.Fatalf("keyword trace add output: %s", out)
+	}
+	if out := mustOK(t, db, "search", "MissingPhrase 记忆系统", "--format", "json"); !strings.Contains(out, "KeywordAlpha") {
+		t.Fatalf("keyword search should match eligible token: %s", out)
+	}
+	if out := mustOK(t, db, "search", "MissingPhrase 记忆系统", "--literal", "--format", "json"); strings.Contains(out, "KeywordAlpha") {
+		t.Fatalf("literal search should not expand tokens: %s", out)
+	}
+	if out := mustOK(t, db, "search", "MissingPhrase SQLite", "--format", "json"); strings.Contains(out, "SQLite") {
+		t.Fatalf("pure ascii token should not expand keyword search: %s", out)
+	}
 	if out := mustOK(t, db, "add", "TruncateTest short", "--type", "thought"); !strings.Contains(out, "trace") {
 		t.Fatalf("short trace add output: %s", out)
 	}
@@ -212,6 +224,23 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	}
 }
 
+func TestSearchTerms(t *testing.T) {
+	got := searchTerms("Skill Q2 规划 记忆系统", false)
+	want := []string{"Skill Q2 规划 记忆系统", "规划", "记忆系统"}
+	if !equalStrings(got, want) {
+		t.Fatalf("search terms = %#v, want %#v", got, want)
+	}
+	if got := searchTerms("Skill Q2 规划", true); !equalStrings(got, []string{"Skill Q2 规划"}) {
+		t.Fatalf("literal search terms = %#v", got)
+	}
+	if searchTokenEligible("SQLite") || searchTokenEligible("2026") || searchTokenEligible("Q2") {
+		t.Fatal("pure ascii tokens should not be eligible")
+	}
+	if !searchTokenEligible("记忆系统") || !searchTokenEligible("Skill平台") {
+		t.Fatal("non-ascii tokens should be eligible")
+	}
+}
+
 func TestServerModeHTTPAPI(t *testing.T) {
 	store := newTestStore(t)
 	auth, err := newServerAuth(ServerAuthConfig{StaticToken: "secret"})
@@ -302,6 +331,15 @@ func TestRemoteCLIAllCommands(t *testing.T) {
 
 	if out := mustRemoteOK(t, server.URL, "search", "SQLite", "--entity-id", strconvFormat(e1)); !strings.Contains(out, "远端 SQLite") {
 		t.Fatalf("remote search output: %s", out)
+	}
+	if out := mustRemoteOK(t, server.URL, "add", "RemoteKeyword 远端测试", "--type", "thought"); !strings.Contains(out, "trace") {
+		t.Fatalf("remote keyword trace add output: %s", out)
+	}
+	if out := mustRemoteOK(t, server.URL, "search", "MissingPhrase 远端测试", "--format", "json"); !strings.Contains(out, "RemoteKeyword") {
+		t.Fatalf("remote keyword search should match eligible token: %s", out)
+	}
+	if out := mustRemoteOK(t, server.URL, "search", "MissingPhrase 远端测试", "--literal", "--format", "json"); strings.Contains(out, "RemoteKeyword") {
+		t.Fatalf("remote literal search should not expand tokens: %s", out)
 	}
 	if out := mustRemoteOK(t, server.URL, "show", "trace", strconvFormat(traceID)); !strings.Contains(out, "Remote 李雷") {
 		t.Fatalf("remote show trace output: %s", out)
@@ -639,4 +677,16 @@ func mustMillis(t *testing.T, v string) int64 {
 		t.Fatal(err)
 	}
 	return parsed.UTC().UnixMilli()
+}
+
+func equalStrings(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }

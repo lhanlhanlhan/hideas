@@ -241,7 +241,7 @@ func writeCommandHelp(w io.Writer, args []string) {
 	case "add":
 		fmt.Fprint(w, "Usage: hideas add CONTENT [--type TYPE] [--at TIME] [--entity NAME] [--entity-id ID]\n")
 	case "search":
-		fmt.Fprint(w, "Usage: hideas search [QUERY] [--entity NAME] [--entity-id ID] [--type TYPE] [--since TIME] [--until TIME] [--recent DURATION] [--limit N] [--format text|json]\n")
+		fmt.Fprint(w, "Usage: hideas search [QUERY] [--entity NAME] [--entity-id ID] [--type TYPE] [--since TIME] [--until TIME] [--recent DURATION] [--literal] [--limit N] [--format text|json]\n")
 	case "show":
 		fmt.Fprint(w, "Usage: hideas show entity|trace|relation ID\n")
 	case "delete":
@@ -622,6 +622,7 @@ func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 	recentStr := fs.String("recent", "", "recent window, e.g. 24h")
 	limit := fs.Int("limit", 20, "limit")
 	format := fs.String("format", "text", "text|json")
+	literal := fs.Bool("literal", false, "match the query as a single literal phrase")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -646,7 +647,7 @@ func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 			return err
 		}
 	}
-	in := SearchInput{Query: strings.Join(pos, " "), EntityName: *entity, TypeName: *typeName, Since: since, Until: until, Limit: *limit}
+	in := SearchInput{Query: strings.Join(pos, " "), EntityName: *entity, TypeName: *typeName, Since: since, Until: until, Limit: *limit, Literal: *literal}
 	if *entityID != 0 {
 		in.EntityID = entityID
 	}

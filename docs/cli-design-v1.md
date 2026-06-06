@@ -337,11 +337,14 @@ Options:
 --since TIMESTAMP_OR_DATE
 --until TIMESTAMP_OR_DATE
 --recent DURATION
+--literal
 --limit N
 --format text|json
 ```
 
 `--recent` is a CLI shortcut that expands to a time window ending at now. Supported units are `h`, `w`, and `y`, and the numeric part must be an integer. Example: `--recent 24h`.
+
+By default, search keeps the full query as a literal phrase and also expands space-separated eligible keyword tokens. Tokens are eligible only when they contain at least one non-ASCII character and are at least two runes long, so pure English, pure numeric, and English-number tokens are not expanded. Use `--literal` to disable keyword expansion.
 
 First version search should support:
 
@@ -349,6 +352,7 @@ First version search should support:
 - Type filtering
 - Time filtering
 - Full-text search when FTS is available
+- Space-separated keyword expansion with conservative token filtering
 - Result limiting with a `has_more` signal when more matches exist than the requested limit
 - Summary output in text mode instead of full trace bodies
 

@@ -55,6 +55,8 @@ Prefer the smallest useful operation:
 
 For quick windowed retrieval, use `hideas search --recent DURATION` in the CLI, for example `--recent 24h`. This is a client-side shortcut only; it expands to `since` and `until` before the search is executed. Supported units are `h`, `w`, and `y`, with integer counts only.
 
+Search keeps the full query as a literal phrase and also expands eligible space-separated keyword tokens. Pure English, pure numeric, and English-number tokens are not expanded. Use `--literal` when an exact phrase match is required.
+
 Search time windows use `happened_at` when present and fall back to `created_at`. If imported historical traces appear in recent searches, correct their `happened_at` with `hideas trace update ID --happened-at DATE`.
 
 Do not over-model. Only create an Entity when it is likely to be searched, linked, or summarized again.

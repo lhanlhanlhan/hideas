@@ -213,6 +213,13 @@ func (a *apiServer) search(w http.ResponseWriter, r *http.Request) (interface{},
 	}
 	q := r.URL.Query()
 	in := SearchInput{Query: q.Get("q"), EntityName: q.Get("entity"), TypeName: q.Get("type")}
+	if v := q.Get("literal"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, err
+		}
+		in.Literal = b
+	}
 	if v := q.Get("entity_id"); v != "" {
 		id, err := strconv.ParseInt(v, 10, 64)
 		if err != nil {
@@ -493,6 +500,9 @@ func (h *HTTPStore) Search(in SearchInput) (SearchResult, error) {
 	}
 	if in.Until != nil {
 		q += fmt.Sprintf("&until=%d", *in.Until)
+	}
+	if in.Literal {
+		q += "&literal=true"
 	}
 	var out SearchResult
 	err := h.do(http.MethodGet, q, nil, &out)

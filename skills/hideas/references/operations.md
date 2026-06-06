@@ -37,10 +37,14 @@ hideas search "SQLite"
 hideas search "SQLite" --entity-id 42
 hideas search --type thought --since 1710000000000
 hideas search "SQLite" --recent 24h
+hideas search "Skill Q2 规划"
+hideas search "Skill Q2 规划" --literal
 hideas search "SQLite" --format json
 ```
 
 Search output in text mode should show concise summaries, not full trace bodies. Search responses include `traces_has_more` and `entities_has_more` so clients can tell when the result set was truncated by `--limit`.
+
+By default, search keeps the full query as a literal phrase and also expands eligible space-separated keyword tokens. Tokens are eligible only when they contain at least one non-ASCII character and are at least two runes long, so pure English, pure numeric, and English-number tokens are not expanded. Use `--literal` for exact phrase search only.
 
 `--recent` is a CLI shortcut that expands to a time window ending at now. Supported units are `h`, `w`, and `y`, and the numeric part must be an integer, for example `24h`, `2w`, or `1y`. Do not combine `--recent` with `--since` or `--until`.
 

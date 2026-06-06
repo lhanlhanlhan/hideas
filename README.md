@@ -78,6 +78,8 @@ Search:
 
 ```bash
 hideas search "SQLite"
+hideas search "Skill Q2 规划"
+hideas search "Skill Q2 规划" --literal
 hideas status
 hideas version
 ```
