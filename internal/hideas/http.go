@@ -1,5 +1,14 @@
 package hideas
 
+// HTTP API contract:
+//
+// All handlers and client methods in this file must stay consistent with
+// docs/http-api-v1.md. Endpoint paths, request shapes, response envelope,
+// JSON field names, status/error semantics, authentication behavior, and base
+// path handling are part of that documented contract. Any intentional API
+// change must update docs/http-api-v1.md and the corresponding tests in the
+// same change.
+
 import (
 	"bytes"
 	"encoding/json"

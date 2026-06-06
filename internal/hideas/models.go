@@ -1,5 +1,14 @@
 package hideas
 
+// Data model contract:
+//
+// The public data shapes and storage constants in this file must stay
+// consistent with docs/database-design-v1.md and docs/http-api-v1.md. Node
+// kind values, type domain values, JSON field names, ID semantics, timestamp
+// semantics, and nullable fields are part of the documented v1.0 model.
+// Changes to these structs or constants must update the relevant docs and
+// tests in the same change.
+
 const (
 	KindEntity   = 1
 	KindTrace    = 2
