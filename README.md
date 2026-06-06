@@ -87,6 +87,14 @@ hideas show trace 1
 hideas show entity 1
 ```
 
+Get command help:
+
+```bash
+hideas --help
+hideas help entity
+hideas entity add --help
+```
+
 ## Operating Modes
 
 ### Local Mode

@@ -191,6 +191,18 @@ json
 
 The same command should return the same JSON schema in local and remote client modes.
 
+## Help
+
+The CLI should provide built-in help at both the root and subcommand levels.
+
+Examples:
+
+```bash
+hideas --help
+hideas help entity
+hideas entity add --help
+```
+
 ## Core Commands
 
 ### init

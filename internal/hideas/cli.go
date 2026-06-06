@@ -33,6 +33,9 @@ func Run(args []string, stdout, stderr io.Writer) int {
 func run(args []string, stdout, stderr io.Writer) error {
 	global := flag.NewFlagSet("hideas", flag.ContinueOnError)
 	global.SetOutput(stderr)
+	global.Usage = func() {
+		writeRootHelp(stderr)
+	}
 	dbPath := global.String("db", "", "SQLite database path")
 	serverURL := global.String("server", "", "hideas server URL")
 	configPath := global.String("config", "", "config file path")
@@ -40,6 +43,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	identity := global.String("identity", "", "SSH private key path for login")
 	credentialsPath := global.String("credentials", "", "credentials file path")
 	if err := global.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	cfg, err := loadConfig(*configPath)
@@ -52,10 +58,19 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	rest := global.Args()
 	if len(rest) == 0 {
-		return errors.New("command is required")
+		writeRootHelp(stdout)
+		return nil
 	}
 	cmd := rest[0]
 	cmdArgs := rest[1:]
+	if cmd == "help" {
+		writeCommandHelp(stdout, cmdArgs)
+		return nil
+	}
+	if isHelpArg(cmd) {
+		writeRootHelp(stdout)
+		return nil
+	}
 
 	if cmd == "serve" {
 		return runServe(cmdArgs, settings, stdout, stderr)
@@ -104,6 +119,108 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return fmt.Errorf("unknown command: %s", cmd)
 	}
 	return nil
+}
+
+func isHelpArg(v string) bool {
+	return v == "-h" || v == "--help"
+}
+
+func wantsHelp(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	for _, arg := range args {
+		if isHelpArg(arg) || arg == "help" {
+			return true
+		}
+	}
+	return false
+}
+
+func firstArgIsHelp(args []string) bool {
+	return len(args) > 0 && (isHelpArg(args[0]) || args[0] == "help")
+}
+
+func writeRootHelp(w io.Writer) {
+	fmt.Fprint(w, `Hideas is a personal memory system with local SQLite mode and remote client/server mode.
+
+Usage:
+  hideas [global options] COMMAND [command options] [arguments]
+  hideas help [COMMAND]
+
+Core commands:
+  init            Initialize the local database
+  add             Add a trace
+  search          Search traces and entities
+  show            Show an entity, trace, or relation by ID
+  link            Create a relation
+  entity          Manage entities
+  profile         Show or set an entity profile
+  type            List or add types
+  db              Inspect the database
+  export          Export data
+
+Remote auth commands:
+  serve           Run the HTTP server
+  login           Log in to a remote server with an SSH identity
+  auth status     Check whether a stored remote token is valid
+  logout          Remove the stored token for a remote server
+
+Global options:
+  --db PATH             SQLite database path
+  --server URL          Hideas server URL for remote mode
+  --config PATH         Config file path
+  --token TOKEN         Static HTTP bearer token
+  --identity PATH       SSH private key path for login
+  --credentials PATH    Credentials file path
+
+Examples:
+  hideas init
+  hideas add "Discussed SQLite indexing" --type thought
+  hideas search "SQLite" --format json
+  hideas entity add "Li Lei" --type person
+  hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
+
+Use "hideas help COMMAND" for command-specific help.
+`)
+}
+
+func writeCommandHelp(w io.Writer, args []string) {
+	if len(args) == 0 {
+		writeRootHelp(w)
+		return
+	}
+	switch args[0] {
+	case "serve":
+		fmt.Fprint(w, "Usage: hideas serve [--db PATH] [--host HOST] [--port PORT] [--base-path PATH] [--token TOKEN] [--authorized-keys PATH]\n")
+	case "login":
+		fmt.Fprint(w, "Usage: hideas login --server URL --identity PATH [--credentials PATH]\n")
+	case "logout":
+		fmt.Fprint(w, "Usage: hideas logout --server URL [--credentials PATH]\n")
+	case "auth":
+		fmt.Fprint(w, "Usage: hideas auth status --server URL [--credentials PATH]\n")
+	case "add":
+		fmt.Fprint(w, "Usage: hideas add CONTENT [--type TYPE] [--at TIME] [--entity NAME] [--entity-id ID]\n")
+	case "search":
+		fmt.Fprint(w, "Usage: hideas search [QUERY] [--entity NAME] [--entity-id ID] [--type TYPE] [--since TIME] [--until TIME] [--limit N] [--format text|json]\n")
+	case "show":
+		fmt.Fprint(w, "Usage: hideas show entity|trace|relation ID\n")
+	case "link":
+		fmt.Fprint(w, "Usage: hideas link FROM_KIND FROM_ID TO_KIND TO_ID --type TYPE\n")
+	case "entity":
+		fmt.Fprint(w, "Usage: hideas entity add|list|show|rename ...\n")
+		fmt.Fprint(w, "  add NAME [--type TYPE]\n  list [--type TYPE]\n  show ID\n  rename ID NAME\n")
+	case "profile":
+		fmt.Fprint(w, "Usage: hideas profile show ENTITY_ID\n       hideas profile set ENTITY_ID CONTENT\n")
+	case "type":
+		fmt.Fprint(w, "Usage: hideas type list\n       hideas type add entity|trace|relation NAME\n")
+	case "db":
+		fmt.Fprint(w, "Usage: hideas db path|stats|check\n")
+	case "export":
+		fmt.Fprint(w, "Usage: hideas export [--format json|markdown]\n")
+	default:
+		fmt.Fprintf(w, "unknown help topic: %s\n", args[0])
+	}
 }
 
 func resolveGlobalConfig(cliDB, cliServer, cliToken, cliIdentity, cliCredentials string, cfg Config) (GlobalSettings, error) {
@@ -174,6 +291,7 @@ func openStore(settings GlobalSettings) (Store, error) {
 func runServe(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { writeCommandHelp(stderr, []string{"serve"}) }
 	dbPath := fs.String("db", settings.DB, "SQLite database path")
 	host := fs.String("host", "127.0.0.1", "listen host")
 	port := fs.Int("port", 8765, "listen port")
@@ -181,6 +299,9 @@ func runServe(args []string, settings GlobalSettings, stdout, stderr io.Writer) 
 	localToken := fs.String("token", settings.Token, "HTTP bearer token")
 	authorizedKeys := fs.String("authorized-keys", settings.AuthorizedKeys, "authorized SSH public keys file")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if *dbPath == "" {
@@ -206,10 +327,14 @@ func runServe(args []string, settings GlobalSettings, stdout, stderr io.Writer) 
 func cmdLogin(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("login", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { writeCommandHelp(stderr, []string{"login"}) }
 	server := fs.String("server", settings.Server, "hideas server URL")
 	identity := fs.String("identity", settings.Identity, "SSH private key path")
 	credentialsPath := fs.String("credentials", settings.CredentialsPath, "credentials file path")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if strings.TrimSpace(*server) == "" {
@@ -244,9 +369,13 @@ func cmdLogin(args []string, settings GlobalSettings, stdout, stderr io.Writer) 
 func cmdLogout(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { writeCommandHelp(stderr, []string{"logout"}) }
 	server := fs.String("server", settings.Server, "hideas server URL")
 	credentialsPath := fs.String("credentials", settings.CredentialsPath, "credentials file path")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if strings.TrimSpace(*server) == "" {
@@ -260,16 +389,21 @@ func cmdLogout(args []string, settings GlobalSettings, stdout, stderr io.Writer)
 }
 
 func cmdAuth(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return errors.New("auth subcommand is required")
+	if len(args) == 0 || firstArgIsHelp(args) {
+		writeCommandHelp(stdout, []string{"auth"})
+		return nil
 	}
 	switch args[0] {
 	case "status":
 		fs := flag.NewFlagSet("auth status", flag.ContinueOnError)
 		fs.SetOutput(stderr)
+		fs.Usage = func() { writeCommandHelp(stderr, []string{"auth"}) }
 		server := fs.String("server", settings.Server, "hideas server URL")
 		credentialsPath := fs.String("credentials", settings.CredentialsPath, "credentials file path")
 		if err := fs.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
 			return err
 		}
 		if strings.TrimSpace(*server) == "" {
@@ -297,6 +431,7 @@ func cmdAuth(args []string, settings GlobalSettings, stdout, stderr io.Writer) e
 func cmdAdd(store Store, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("add", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { writeCommandHelp(stderr, []string{"add"}) }
 	typeName := fs.String("type", "", "trace type")
 	at := fs.String("at", "", "happened time")
 	entities := multiFlag{}
@@ -305,6 +440,9 @@ func cmdAdd(store Store, args []string, stdout, stderr io.Writer) error {
 	fs.Var(&entityIDs, "entity-id", "entity id")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if len(pos) < 1 {
@@ -325,6 +463,7 @@ func cmdAdd(store Store, args []string, stdout, stderr io.Writer) error {
 func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("search", flag.ContinueOnError)
 	fs.SetOutput(stderr)
+	fs.Usage = func() { writeCommandHelp(stderr, []string{"search"}) }
 	entity := fs.String("entity", "", "entity name")
 	entityID := fs.Int64("entity-id", 0, "entity id")
 	typeName := fs.String("type", "", "trace type")
@@ -334,6 +473,9 @@ func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 	format := fs.String("format", "text", "text|json")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	since, err := parseOptionalTime(*sinceStr)
@@ -365,6 +507,10 @@ func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 }
 
 func cmdShow(store Store, args []string, stdout io.Writer) error {
+	if wantsHelp(args) {
+		writeCommandHelp(stdout, []string{"show"})
+		return nil
+	}
 	if len(args) != 2 {
 		return errors.New("usage: show KIND ID")
 	}
@@ -401,9 +547,13 @@ func cmdShow(store Store, args []string, stdout io.Writer) error {
 
 func cmdLink(store Store, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("link", flag.ContinueOnError)
+	fs.Usage = func() { writeCommandHelp(stdout, []string{"link"}) }
 	typeName := fs.String("type", "", "relation type")
 	pos, err := parseInterspersed(fs, args)
 	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	if len(pos) != 4 {
@@ -426,16 +576,21 @@ func cmdLink(store Store, args []string, stdout io.Writer) error {
 }
 
 func cmdEntity(store Store, args []string, stdout, stderr io.Writer) error {
-	if len(args) == 0 {
-		return errors.New("entity subcommand is required")
+	if len(args) == 0 || firstArgIsHelp(args) {
+		writeCommandHelp(stdout, []string{"entity"})
+		return nil
 	}
 	switch args[0] {
 	case "add":
 		fs := flag.NewFlagSet("entity add", flag.ContinueOnError)
 		fs.SetOutput(stderr)
+		fs.Usage = func() { fmt.Fprint(stderr, "Usage: hideas entity add NAME [--type TYPE]\n") }
 		typeName := fs.String("type", "", "entity type")
 		pos, err := parseInterspersed(fs, args[1:])
 		if err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
 			return err
 		}
 		if len(pos) < 1 {
@@ -449,8 +604,12 @@ func cmdEntity(store Store, args []string, stdout, stderr io.Writer) error {
 	case "list":
 		fs := flag.NewFlagSet("entity list", flag.ContinueOnError)
 		fs.SetOutput(stderr)
+		fs.Usage = func() { fmt.Fprint(stderr, "Usage: hideas entity list [--type TYPE]\n") }
 		typeName := fs.String("type", "", "entity type")
 		if err := fs.Parse(args[1:]); err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
 			return err
 		}
 		list, err := store.ListEntities(*typeName)
@@ -465,11 +624,19 @@ func cmdEntity(store Store, args []string, stdout, stderr io.Writer) error {
 			fmt.Fprintln(stdout)
 		}
 	case "show":
+		if len(args) > 1 && wantsHelp(args[1:]) {
+			fmt.Fprint(stdout, "Usage: hideas entity show ID\n")
+			return nil
+		}
 		if len(args) != 2 {
 			return errors.New("usage: entity show ID")
 		}
 		return cmdShow(store, []string{"entity", args[1]}, stdout)
 	case "rename":
+		if len(args) > 1 && wantsHelp(args[1:]) {
+			fmt.Fprint(stdout, "Usage: hideas entity rename ID NAME\n")
+			return nil
+		}
 		if len(args) < 3 {
 			return errors.New("usage: entity rename ID NAME")
 		}
@@ -489,6 +656,10 @@ func cmdEntity(store Store, args []string, stdout, stderr io.Writer) error {
 }
 
 func cmdProfile(store Store, args []string, stdout io.Writer) error {
+	if len(args) == 0 || firstArgIsHelp(args) {
+		writeCommandHelp(stdout, []string{"profile"})
+		return nil
+	}
 	if len(args) < 2 {
 		return errors.New("usage: profile show|set ENTITY_ID [content]")
 	}
@@ -519,8 +690,9 @@ func cmdProfile(store Store, args []string, stdout io.Writer) error {
 }
 
 func cmdType(store Store, args []string, stdout io.Writer) error {
-	if len(args) == 0 {
-		return errors.New("type subcommand is required")
+	if len(args) == 0 || firstArgIsHelp(args) {
+		writeCommandHelp(stdout, []string{"type"})
+		return nil
 	}
 	switch args[0] {
 	case "list":
@@ -547,6 +719,10 @@ func cmdType(store Store, args []string, stdout io.Writer) error {
 }
 
 func cmdDB(store Store, args []string, stdout io.Writer) error {
+	if len(args) == 0 || firstArgIsHelp(args) {
+		writeCommandHelp(stdout, []string{"db"})
+		return nil
+	}
 	if len(args) != 1 {
 		return errors.New("usage: db path|stats|check")
 	}
@@ -579,8 +755,12 @@ func cmdDB(store Store, args []string, stdout io.Writer) error {
 
 func cmdExport(store Store, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("export", flag.ContinueOnError)
+	fs.Usage = func() { writeCommandHelp(stdout, []string{"export"}) }
 	format := fs.String("format", "json", "json|markdown")
 	if err := fs.Parse(args); err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
 		return err
 	}
 	b, err := store.Export(*format)
@@ -644,6 +824,10 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 	var pos []string
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
+		if isHelpArg(arg) {
+			flagArgs = append(flagArgs, arg)
+			continue
+		}
 		if strings.HasPrefix(arg, "--") {
 			flagArgs = append(flagArgs, arg)
 			if !strings.Contains(arg, "=") {

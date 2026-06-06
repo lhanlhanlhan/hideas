@@ -333,6 +333,40 @@ func TestDefaultDBPathIsAppDataPath(t *testing.T) {
 	}
 }
 
+func TestCLIHelp(t *testing.T) {
+	out, errOut, code := runCLI(t, "--help")
+	if code != 0 {
+		t.Fatalf("root help failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(errOut, "Usage:") || !strings.Contains(errOut, "hideas help COMMAND") {
+		t.Fatalf("unexpected root help stderr=%s", errOut)
+	}
+
+	out, errOut, code = runCLI(t, "help", "entity")
+	if code != 0 {
+		t.Fatalf("help entity failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "hideas entity add|list|show|rename") {
+		t.Fatalf("unexpected entity help output: %s", out)
+	}
+
+	out, errOut, code = runCLI(t, "entity", "add", "--help")
+	if code != 0 {
+		t.Fatalf("entity add help failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(errOut, "Usage: hideas entity add NAME") {
+		t.Fatalf("unexpected entity add help stderr=%s", errOut)
+	}
+
+	out, errOut, code = runCLI(t, "show", "--help")
+	if code != 0 {
+		t.Fatalf("show help failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "Usage: hideas show entity|trace|relation ID") {
+		t.Fatalf("unexpected show help output: %s", out)
+	}
+}
+
 func newTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "hideas.sqlite"))
