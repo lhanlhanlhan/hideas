@@ -103,6 +103,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cmdSearch(store, cmdArgs, stdout, stderr)
 	case "show":
 		return cmdShow(store, cmdArgs, stdout)
+	case "delete":
+		return cmdDelete(store, cmdArgs, stdout)
 	case "link":
 		return cmdLink(store, cmdArgs, stdout)
 	case "entity":
@@ -153,6 +155,7 @@ Core commands:
   add             Add a trace
   search          Search traces and entities
   show            Show an entity, trace, or relation by ID
+  delete          Delete an entity, trace, or relation by ID
   link            Create a relation
   entity          Manage entities
   profile         Show or set an entity profile
@@ -205,6 +208,8 @@ func writeCommandHelp(w io.Writer, args []string) {
 		fmt.Fprint(w, "Usage: hideas search [QUERY] [--entity NAME] [--entity-id ID] [--type TYPE] [--since TIME] [--until TIME] [--limit N] [--format text|json]\n")
 	case "show":
 		fmt.Fprint(w, "Usage: hideas show entity|trace|relation ID\n")
+	case "delete":
+		fmt.Fprint(w, "Usage: hideas delete entity|trace|relation ID [--cascade]\n")
 	case "link":
 		fmt.Fprint(w, "Usage: hideas link FROM_KIND FROM_ID TO_KIND TO_ID --type TYPE\n")
 	case "entity":
@@ -545,6 +550,39 @@ func cmdShow(store Store, args []string, stdout io.Writer) error {
 	return nil
 }
 
+func cmdDelete(store Store, args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("delete", flag.ContinueOnError)
+	fs.Usage = func() { writeCommandHelp(stdout, []string{"delete"}) }
+	cascade := fs.Bool("cascade", false, "delete related relations and clear profile references")
+	pos, err := parseInterspersed(fs, args)
+	if err != nil {
+		if errors.Is(err, flag.ErrHelp) {
+			return nil
+		}
+		return err
+	}
+	if len(pos) != 2 {
+		return errors.New("usage: delete KIND ID [--cascade]")
+	}
+	id, err := strconv.ParseInt(pos[1], 10, 64)
+	if err != nil {
+		return err
+	}
+	res, err := store.Delete(pos[0], id, *cascade)
+	if err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "deleted %s %d", res.Kind, res.ID)
+	if res.RelationsDeleted > 0 {
+		fmt.Fprintf(stdout, " relations_deleted=%d", res.RelationsDeleted)
+	}
+	if res.ProfilesCleared > 0 {
+		fmt.Fprintf(stdout, " profiles_cleared=%d", res.ProfilesCleared)
+	}
+	fmt.Fprintln(stdout)
+	return nil
+}
+
 func cmdLink(store Store, args []string, stdout io.Writer) error {
 	fs := flag.NewFlagSet("link", flag.ContinueOnError)
 	fs.Usage = func() { writeCommandHelp(stdout, []string{"link"}) }
@@ -831,6 +869,12 @@ func parseInterspersed(fs *flag.FlagSet, args []string) ([]string, error) {
 		if strings.HasPrefix(arg, "--") {
 			flagArgs = append(flagArgs, arg)
 			if !strings.Contains(arg, "=") {
+				name := strings.TrimLeft(arg, "-")
+				if f := fs.Lookup(name); f != nil {
+					if bf, ok := f.Value.(interface{ IsBoolFlag() bool }); ok && bf.IsBoolFlag() {
+						continue
+					}
+				}
 				if i+1 >= len(args) {
 					return nil, fmt.Errorf("missing value for %s", arg)
 				}

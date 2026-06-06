@@ -72,6 +72,16 @@ hideas link entity 1 entity 2 --type alias_of
 hideas link trace 55 relation 9 --type supports
 ```
 
+Delete objects:
+
+```bash
+hideas delete relation 9
+hideas delete trace 123 --cascade
+hideas delete entity 42 --cascade
+```
+
+Deletion is conservative by default. If Hideas reports `delete blocked`, inspect the object with `hideas show` and retry with `--cascade` only when deleting related relations is intended.
+
 Inspect database:
 
 ```bash

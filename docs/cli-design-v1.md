@@ -333,6 +333,29 @@ Responsibilities:
 - Display connected entities, traces, and relations
 - Always include IDs in output
 
+### delete
+
+Delete an object.
+
+```bash
+hideas delete relation 9
+hideas delete trace 123 --cascade
+hideas delete entity 42 --cascade
+```
+
+Default behavior is conservative:
+
+- If the target is referenced by any relation, deletion is rejected.
+- If a trace is used as an entity profile, deletion is rejected.
+- The error should tell the user to retry with `--cascade` when appropriate.
+
+Cascade behavior:
+
+- Deletes relations that reference the target.
+- Recursively deletes relations that reference those deleted relations.
+- Clears `entities.profile_trace_id` when deleting a profile trace.
+- Does not delete connected entities or traces other than the requested target.
+
 ### link
 
 Create a relation manually.
@@ -440,6 +463,7 @@ GET /api/v1/health
 ```http
 POST /api/v1/traces
 GET /api/v1/traces/{id}
+DELETE /api/v1/traces/{id}
 GET /api/v1/search
 ```
 
@@ -450,6 +474,7 @@ POST /api/v1/entities
 GET /api/v1/entities/{id}
 GET /api/v1/entities
 PATCH /api/v1/entities/{id}
+DELETE /api/v1/entities/{id}
 ```
 
 ### Relations
@@ -457,6 +482,7 @@ PATCH /api/v1/entities/{id}
 ```http
 POST /api/v1/relations
 GET /api/v1/relations/{id}
+DELETE /api/v1/relations/{id}
 ```
 
 ### Types
@@ -557,6 +583,7 @@ hideas serve
 hideas add
 hideas search
 hideas show
+hideas delete
 hideas link
 hideas entity add
 hideas entity list

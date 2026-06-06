@@ -72,6 +72,15 @@ type CheckResult struct {
 	Errors []string `json:"errors"`
 }
 
+type DeleteResult struct {
+	Kind               string  `json:"kind"`
+	ID                 int64   `json:"id"`
+	Cascade            bool    `json:"cascade"`
+	RelationsDeleted   int     `json:"relations_deleted"`
+	ProfilesCleared    int     `json:"profiles_cleared"`
+	DeletedRelationIDs []int64 `json:"deleted_relation_ids,omitempty"`
+}
+
 type AddTraceInput struct {
 	Content   string
 	TypeName  string
@@ -113,6 +122,7 @@ type Store interface {
 	AddTrace(AddTraceInput) (Trace, error)
 	Search(SearchInput) (SearchResult, error)
 	Show(kind string, id int64) (ShowResult, error)
+	Delete(kind string, id int64, cascade bool) (DeleteResult, error)
 	Link(fromKind string, fromID int64, toKind string, toID int64, typeName string) (Relation, error)
 
 	AddEntity(name, typeName string) (Entity, error)

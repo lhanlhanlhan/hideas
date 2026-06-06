@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -605,6 +607,200 @@ func (s *SQLiteStore) Show(kind string, id int64) (ShowResult, error) {
 	default:
 		return ShowResult{}, fmt.Errorf("unknown kind: %s", kind)
 	}
+}
+
+func (s *SQLiteStore) Delete(kindName string, id int64, cascade bool) (DeleteResult, error) {
+	kind, err := kindFromName(kindName)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	tx, err := s.db.Begin()
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	defer tx.Rollback()
+	if !s.existsTx(tx, kind, id) {
+		return DeleteResult{}, fmt.Errorf("%s not found: %d", kindName, id)
+	}
+	blockers, err := s.deleteBlockersTx(tx, kind, id)
+	if err != nil {
+		return DeleteResult{}, err
+	}
+	if len(blockers) > 0 && !cascade {
+		return DeleteResult{}, fmt.Errorf("delete blocked: %s; use --cascade to delete related relations and clear profile references", strings.Join(blockers, "; "))
+	}
+	res := DeleteResult{Kind: kindName, ID: id, Cascade: cascade}
+	var relationIDs []int64
+	if cascade {
+		relationIDs, err = s.collectCascadeRelationIDsTx(tx, kind, id)
+		if err != nil {
+			return DeleteResult{}, err
+		}
+		if kind == KindTrace {
+			n, err := s.clearProfileReferencesTx(tx, id)
+			if err != nil {
+				return DeleteResult{}, err
+			}
+			res.ProfilesCleared = n
+		}
+	}
+	if kind == KindRelation {
+		relationIDs = append(relationIDs, id)
+	}
+	relationIDs = uniqueInt64s(relationIDs)
+	if len(relationIDs) > 0 {
+		if err := s.deleteRelationsTx(tx, relationIDs); err != nil {
+			return DeleteResult{}, err
+		}
+		res.RelationsDeleted = len(relationIDs)
+		res.DeletedRelationIDs = relationIDs
+	}
+	if kind != KindRelation {
+		table := map[int]string{KindEntity: "entities", KindTrace: "traces"}[kind]
+		r, err := tx.Exec(`DELETE FROM `+table+` WHERE id = ?`, id)
+		if err != nil {
+			return DeleteResult{}, err
+		}
+		if n, _ := r.RowsAffected(); n == 0 {
+			return DeleteResult{}, errNotFound
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return DeleteResult{}, err
+	}
+	return res, nil
+}
+
+func (s *SQLiteStore) deleteBlockersTx(tx *sql.Tx, kind int, id int64) ([]string, error) {
+	var blockers []string
+	rows, err := tx.Query(`SELECT id FROM relations WHERE (from_kind = ? AND from_id = ?) OR (to_kind = ? AND to_id = ?) ORDER BY id`, kind, id, kind, id)
+	if err != nil {
+		return nil, err
+	}
+	var relIDs []string
+	for rows.Next() {
+		var relID int64
+		if err := rows.Scan(&relID); err != nil {
+			_ = rows.Close()
+			return nil, err
+		}
+		relIDs = append(relIDs, strconv.FormatInt(relID, 10))
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	if len(relIDs) > 0 {
+		blockers = append(blockers, "referenced by relations "+strings.Join(relIDs, ","))
+	}
+	if kind == KindTrace {
+		rows, err := tx.Query(`SELECT id FROM entities WHERE profile_trace_id = ? ORDER BY id`, id)
+		if err != nil {
+			return nil, err
+		}
+		var entityIDs []string
+		for rows.Next() {
+			var entityID int64
+			if err := rows.Scan(&entityID); err != nil {
+				_ = rows.Close()
+				return nil, err
+			}
+			entityIDs = append(entityIDs, strconv.FormatInt(entityID, 10))
+		}
+		if err := rows.Close(); err != nil {
+			return nil, err
+		}
+		if err := rows.Err(); err != nil {
+			return nil, err
+		}
+		if len(entityIDs) > 0 {
+			blockers = append(blockers, "used as profile by entities "+strings.Join(entityIDs, ","))
+		}
+	}
+	return blockers, nil
+}
+
+func (s *SQLiteStore) collectCascadeRelationIDsTx(tx *sql.Tx, kind int, id int64) ([]int64, error) {
+	seen := map[int64]bool{}
+	var queue []int64
+	if kind == KindRelation {
+		queue = append(queue, id)
+	}
+	direct, err := s.relationIDsReferencingTx(tx, kind, id)
+	if err != nil {
+		return nil, err
+	}
+	queue = append(queue, direct...)
+	for len(queue) > 0 {
+		relID := queue[0]
+		queue = queue[1:]
+		if seen[relID] {
+			continue
+		}
+		seen[relID] = true
+		next, err := s.relationIDsReferencingTx(tx, KindRelation, relID)
+		if err != nil {
+			return nil, err
+		}
+		queue = append(queue, next...)
+	}
+	var ids []int64
+	for id := range seen {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	return ids, nil
+}
+
+func (s *SQLiteStore) relationIDsReferencingTx(tx *sql.Tx, kind int, id int64) ([]int64, error) {
+	rows, err := tx.Query(`SELECT id FROM relations WHERE (from_kind = ? AND from_id = ?) OR (to_kind = ? AND to_id = ?) ORDER BY id`, kind, id, kind, id)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	for rows.Next() {
+		var relID int64
+		if err := rows.Scan(&relID); err != nil {
+			return nil, err
+		}
+		ids = append(ids, relID)
+	}
+	return ids, rows.Err()
+}
+
+func (s *SQLiteStore) clearProfileReferencesTx(tx *sql.Tx, traceID int64) (int, error) {
+	r, err := tx.Exec(`UPDATE entities SET profile_trace_id = NULL, updated_at = ? WHERE profile_trace_id = ?`, nowMillis(), traceID)
+	if err != nil {
+		return 0, err
+	}
+	n, _ := r.RowsAffected()
+	return int(n), nil
+}
+
+func (s *SQLiteStore) deleteRelationsTx(tx *sql.Tx, relationIDs []int64) error {
+	for _, id := range relationIDs {
+		if _, err := tx.Exec(`DELETE FROM relations WHERE id = ?`, id); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func uniqueInt64s(in []int64) []int64 {
+	seen := map[int64]bool{}
+	var out []int64
+	for _, v := range in {
+		if seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i] < out[j] })
+	return out
 }
 
 func (s *SQLiteStore) tracesForEntity(id int64) ([]Trace, error) {

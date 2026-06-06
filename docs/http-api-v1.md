@@ -114,6 +114,7 @@ Known error codes:
 ```text
 unauthorized
 ambiguous_entity
+delete_blocked
 not_found
 error
 ```
@@ -344,6 +345,33 @@ Response data:
 }
 ```
 
+### DELETE /traces/{id}
+
+Deletes a trace.
+
+By default, deletion is rejected if the trace is referenced by any relation or used as an entity profile.
+
+Query parameters:
+
+```text
+cascade  optional boolean, true/false
+```
+
+With `cascade=true`, related relations are deleted recursively and any entity `profile_trace_id` pointing to the trace is cleared. Connected entities are not deleted.
+
+Response data:
+
+```json
+{
+  "kind": "trace",
+  "id": 12,
+  "cascade": true,
+  "relations_deleted": 2,
+  "profiles_cleared": 1,
+  "deleted_relation_ids": [4, 5]
+}
+```
+
 ## Search
 
 ### GET /search
@@ -472,6 +500,33 @@ Response data:
 }
 ```
 
+### DELETE /entities/{id}
+
+Deletes an entity.
+
+By default, deletion is rejected if the entity is referenced by any relation.
+
+Query parameters:
+
+```text
+cascade  optional boolean, true/false
+```
+
+With `cascade=true`, related relations are deleted recursively. Connected traces or entities are not deleted.
+
+Response data:
+
+```json
+{
+  "kind": "entity",
+  "id": 1,
+  "cascade": true,
+  "relations_deleted": 3,
+  "profiles_cleared": 0,
+  "deleted_relation_ids": [1, 2, 3]
+}
+```
+
 ## Profiles
 
 ### PUT /profiles/{entity_id}
@@ -560,6 +615,33 @@ Response data:
   "kind": "relation",
   "relation": {},
   "relations": []
+}
+```
+
+### DELETE /relations/{id}
+
+Deletes a relation.
+
+By default, deletion is rejected if another relation references this relation.
+
+Query parameters:
+
+```text
+cascade  optional boolean, true/false
+```
+
+With `cascade=true`, relations that reference this relation are deleted recursively.
+
+Response data:
+
+```json
+{
+  "kind": "relation",
+  "id": 1,
+  "cascade": true,
+  "relations_deleted": 2,
+  "profiles_cleared": 0,
+  "deleted_relation_ids": [1, 7]
 }
 ```
 

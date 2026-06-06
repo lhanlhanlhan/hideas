@@ -107,8 +107,20 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	if out := mustOK(t, db, "show", "relation", strconvFormat(relID)); !strings.Contains(out, "related_to") {
 		t.Fatalf("show relation output: %s", out)
 	}
+	out, errOut, code = runCLI(t, "--db", db, "delete", "entity", strconvFormat(e1))
+	if code == 0 || !strings.Contains(errOut, "delete blocked") {
+		t.Fatalf("expected blocked entity delete, code=%d stdout=%s stderr=%s", code, out, errOut)
+	}
+	if out := mustOK(t, db, "delete", "relation", strconvFormat(relID)); !strings.Contains(out, "deleted relation "+strconvFormat(relID)) {
+		t.Fatalf("delete relation output: %s", out)
+	}
+	out, errOut, code = runCLI(t, "--db", db, "show", "relation", strconvFormat(relID))
+	if code == 0 || !strings.Contains(errOut, "not found") {
+		t.Fatalf("expected deleted relation not found, code=%d stdout=%s stderr=%s", code, out, errOut)
+	}
 
-	if out := mustOK(t, db, "profile", "set", strconvFormat(e1), "前同事，做后端"); !strings.Contains(out, "profile") {
+	profileID := firstID(t, mustOK(t, db, "profile", "set", strconvFormat(e1), "前同事，做后端"), "profile")
+	if profileID == 0 {
 		t.Fatalf("profile set output: %s", out)
 	}
 	if out := mustOK(t, db, "profile", "show", strconvFormat(e1)); !strings.Contains(out, "前同事") {
@@ -117,9 +129,19 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	if out := mustOK(t, db, "entity", "show", strconvFormat(e1)); !strings.Contains(out, "profile: 前同事") {
 		t.Fatalf("entity show output: %s", out)
 	}
+	out, errOut, code = runCLI(t, "--db", db, "delete", "trace", strconvFormat(profileID))
+	if code == 0 || !strings.Contains(errOut, "delete blocked") {
+		t.Fatalf("expected blocked profile trace delete, code=%d stdout=%s stderr=%s", code, out, errOut)
+	}
+	if out := mustOK(t, db, "delete", "trace", strconvFormat(profileID), "--cascade"); !strings.Contains(out, "profiles_cleared=1") {
+		t.Fatalf("delete profile trace cascade output: %s", out)
+	}
 
 	if out := mustOK(t, db, "entity", "rename", strconvFormat(e2), "李雷-设计师"); !strings.Contains(out, "renamed") {
 		t.Fatalf("rename output: %s", out)
+	}
+	if out := mustOK(t, db, "delete", "entity", strconvFormat(e1), "--cascade"); !strings.Contains(out, "relations_deleted=") {
+		t.Fatalf("delete entity cascade output: %s", out)
 	}
 
 	if out := mustOK(t, db, "type", "add", "trace", "decision"); !strings.Contains(out, "type") {
@@ -186,6 +208,14 @@ func TestServerModeHTTPAPI(t *testing.T) {
 		t.Fatalf("relation response: %+v", rel)
 	}
 	_ = apiDo[ShowResult](t, server.URL, "secret", http.MethodGet, "/hideas/api/v1/relations/"+strconvFormat(rel.ID), nil)
+	blockedDelete := apiDoRaw(t, server.URL, "secret", http.MethodDelete, "/hideas/api/v1/traces/"+strconvFormat(profile.ID), nil)
+	if blockedDelete.OK || blockedDelete.Error == nil || blockedDelete.Error.Code != "delete_blocked" {
+		t.Fatalf("expected delete_blocked, got %+v", blockedDelete)
+	}
+	deletedTrace := apiDo[DeleteResult](t, server.URL, "secret", http.MethodDelete, "/hideas/api/v1/traces/"+strconvFormat(profile.ID)+"?cascade=true", nil)
+	if deletedTrace.ProfilesCleared != 1 || deletedTrace.RelationsDeleted == 0 {
+		t.Fatalf("delete trace response: %+v", deletedTrace)
+	}
 	if types := apiDo[[]Type](t, server.URL, "secret", http.MethodGet, "/hideas/api/v1/types", nil); len(types) == 0 {
 		t.Fatal("expected seeded types")
 	}
@@ -220,6 +250,9 @@ func TestRemoteCLIAllCommands(t *testing.T) {
 	if out := mustRemoteOK(t, server.URL, "show", "relation", strconvFormat(relID)); !strings.Contains(out, "related_to") {
 		t.Fatalf("remote show relation output: %s", out)
 	}
+	if out := mustRemoteOK(t, server.URL, "delete", "relation", strconvFormat(relID)); !strings.Contains(out, "deleted relation "+strconvFormat(relID)) {
+		t.Fatalf("remote delete relation output: %s", out)
+	}
 	if out := mustRemoteOK(t, server.URL, "profile", "set", strconvFormat(e1), "远端 profile"); !strings.Contains(out, "profile") {
 		t.Fatalf("remote profile set output: %s", out)
 	}
@@ -246,6 +279,13 @@ func TestRemoteCLIAllCommands(t *testing.T) {
 	}
 	if out := mustRemoteOK(t, server.URL, "export", "--format", "json"); !strings.Contains(out, "Remote 李雷") {
 		t.Fatalf("remote export output: %s", out)
+	}
+	out, errOut, code := runCLI(t, "--server", server.URL, "delete", "entity", strconvFormat(e1))
+	if code == 0 || !strings.Contains(errOut, "delete blocked") {
+		t.Fatalf("expected remote blocked delete, code=%d stdout=%s stderr=%s", code, out, errOut)
+	}
+	if out := mustRemoteOK(t, server.URL, "delete", "entity", strconvFormat(e1), "--cascade"); !strings.Contains(out, "deleted entity "+strconvFormat(e1)) {
+		t.Fatalf("remote delete entity cascade output: %s", out)
 	}
 }
 
@@ -395,6 +435,23 @@ func mustSSHAuth(t *testing.T) *serverAuth {
 
 func apiDo[T any](t *testing.T, base, token, method, path string, body interface{}) T {
 	t.Helper()
+	env := apiDoRaw(t, base, token, method, path, body)
+	if !env.OK {
+		t.Fatalf("api error error=%+v", env.Error)
+	}
+	var out T
+	if err := json.Unmarshal(env.Data, &out); err != nil {
+		t.Fatal(err)
+	}
+	return out
+}
+
+func apiDoRaw(t *testing.T, base, token, method, path string, body interface{}) struct {
+	OK    bool            `json:"ok"`
+	Data  json.RawMessage `json:"data"`
+	Error *apiError       `json:"error"`
+} {
+	t.Helper()
 	var r io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
@@ -426,14 +483,7 @@ func apiDo[T any](t *testing.T, base, token, method, path string, body interface
 	if err := json.NewDecoder(resp.Body).Decode(&env); err != nil {
 		t.Fatal(err)
 	}
-	if !env.OK {
-		t.Fatalf("api error status=%d error=%+v", resp.StatusCode, env.Error)
-	}
-	var out T
-	if err := json.Unmarshal(env.Data, &out); err != nil {
-		t.Fatal(err)
-	}
-	return out
+	return env
 }
 
 func strconvFormat(v int64) string {

@@ -109,7 +109,7 @@ func statusForError(err error) int {
 	if strings.Contains(err.Error(), "not found") {
 		return http.StatusNotFound
 	}
-	if strings.Contains(err.Error(), "ambiguous") || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "unknown") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "expired") {
+	if strings.Contains(err.Error(), "ambiguous") || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "unknown") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "expired") || strings.Contains(err.Error(), "delete blocked") {
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
@@ -120,6 +120,8 @@ func codeForError(err error) string {
 	switch {
 	case strings.Contains(msg, "unauthorized"):
 		return "unauthorized"
+	case strings.Contains(msg, "delete blocked"):
+		return "delete_blocked"
 	case strings.Contains(msg, "ambiguous entity"):
 		return "ambiguous_entity"
 	case strings.Contains(msg, "not found"):
@@ -177,14 +179,18 @@ func (a *apiServer) traces(w http.ResponseWriter, r *http.Request) (interface{},
 }
 
 func (a *apiServer) traceByID(w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	if r.Method != http.MethodGet {
-		return nil, fmt.Errorf("unsupported method")
-	}
 	id, err := tailID(r.URL.Path)
 	if err != nil {
 		return nil, err
 	}
-	return a.store.Show("trace", id)
+	switch r.Method {
+	case http.MethodGet:
+		return a.store.Show("trace", id)
+	case http.MethodDelete:
+		return a.store.Delete("trace", id, cascadeQuery(r))
+	default:
+		return nil, fmt.Errorf("unsupported method")
+	}
 }
 
 func (a *apiServer) search(w http.ResponseWriter, r *http.Request) (interface{}, error) {
@@ -260,6 +266,8 @@ func (a *apiServer) entityByID(w http.ResponseWriter, r *http.Request) (interfac
 			return nil, err
 		}
 		return a.store.RenameEntity(id, in.Name)
+	case http.MethodDelete:
+		return a.store.Delete("entity", id, cascadeQuery(r))
 	default:
 		return nil, fmt.Errorf("unsupported method")
 	}
@@ -283,14 +291,23 @@ func (a *apiServer) relations(w http.ResponseWriter, r *http.Request) (interface
 }
 
 func (a *apiServer) relationByID(w http.ResponseWriter, r *http.Request) (interface{}, error) {
-	if r.Method != http.MethodGet {
-		return nil, fmt.Errorf("unsupported method")
-	}
 	id, err := tailID(r.URL.Path)
 	if err != nil {
 		return nil, err
 	}
-	return a.store.Show("relation", id)
+	switch r.Method {
+	case http.MethodGet:
+		return a.store.Show("relation", id)
+	case http.MethodDelete:
+		return a.store.Delete("relation", id, cascadeQuery(r))
+	default:
+		return nil, fmt.Errorf("unsupported method")
+	}
+}
+
+func cascadeQuery(r *http.Request) bool {
+	v := strings.ToLower(r.URL.Query().Get("cascade"))
+	return v == "1" || v == "true" || v == "yes"
 }
 
 func (a *apiServer) profileByEntityID(w http.ResponseWriter, r *http.Request) (interface{}, error) {
@@ -463,6 +480,20 @@ func (h *HTTPStore) Show(kind string, id int64) (ShowResult, error) {
 		return ShowResult{}, fmt.Errorf("unknown kind: %s", kind)
 	}
 	err := h.do(http.MethodGet, "/"+plural+"/"+strconv.FormatInt(id, 10), nil, &out)
+	return out, err
+}
+
+func (h *HTTPStore) Delete(kind string, id int64, cascade bool) (DeleteResult, error) {
+	var out DeleteResult
+	plural := map[string]string{"entity": "entities", "trace": "traces", "relation": "relations"}[kind]
+	if plural == "" {
+		return DeleteResult{}, fmt.Errorf("unknown kind: %s", kind)
+	}
+	path := "/" + plural + "/" + strconv.FormatInt(id, 10)
+	if cascade {
+		path += "?cascade=true"
+	}
+	err := h.do(http.MethodDelete, path, nil, &out)
 	return out, err
 }
 

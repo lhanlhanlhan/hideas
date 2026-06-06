@@ -87,6 +87,14 @@ hideas show trace 1
 hideas show entity 1
 ```
 
+Delete an object:
+
+```bash
+hideas delete relation 9
+hideas delete trace 1 --cascade
+hideas delete entity 1 --cascade
+```
+
 Get command help:
 
 ```bash

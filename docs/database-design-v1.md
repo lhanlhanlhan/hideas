@@ -336,3 +336,15 @@ related_to
 - Keep entities sparse. Not every noun should become an entity.
 - Keep traces short. Long source content should be represented as an entity or source trace and linked from smaller traces.
 - Keep relations meaningful. Avoid extracting too many low-value relations from each trace.
+
+## Deletion Rules
+
+Deletion is conservative by default.
+
+- Deleting an entity, trace, or relation is rejected if any relation references it.
+- Deleting a trace is rejected if any entity uses it as `profile_trace_id`.
+- `--cascade` or `cascade=true` deletes related relations recursively.
+- Cascading an entity delete does not delete connected traces or entities.
+- Cascading a trace delete does not delete connected entities or traces.
+- Cascading a profile trace delete clears matching `entities.profile_trace_id`.
+- Cascading a relation delete recursively deletes relations that reference that relation.

@@ -52,6 +52,7 @@ This includes:
 - Entity name non-uniqueness
 - `profile_trace_id` behavior
 - Relation endpoint semantics
+- Conservative delete and cascade semantics
 - Index and foreign key policy
 
 If a model or schema change is intentional, update all of these in the same change:
@@ -120,4 +121,3 @@ If asset names or supported platforms change, update:
 - Do not change JSON field names without updating the HTTP API spec.
 - Do not add undocumented API endpoints.
 - Do not add database tables or columns without updating the database design document.
-
