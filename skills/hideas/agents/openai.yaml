@@ -1,0 +1,8 @@
+interface:
+  display_name: "Hideas"
+  short_description: "Use the Hideas personal memory system"
+  default_prompt: "Use $hideas to record, retrieve, or connect personal memory in Hideas."
+
+policy:
+  allow_implicit_invocation: true
+
