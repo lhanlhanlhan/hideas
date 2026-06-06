@@ -505,11 +505,11 @@ func (s *SQLiteStore) Search(in SearchInput) (SearchResult, error) {
 		args = append(args, *typeID)
 	}
 	if in.Since != nil {
-		where = append(where, `tr.happened_at >= ?`)
+		where = append(where, `COALESCE(tr.happened_at, tr.created_at) >= ?`)
 		args = append(args, *in.Since)
 	}
 	if in.Until != nil {
-		where = append(where, `tr.happened_at <= ?`)
+		where = append(where, `COALESCE(tr.happened_at, tr.created_at) <= ?`)
 		args = append(args, *in.Until)
 	}
 	if entityID != nil {

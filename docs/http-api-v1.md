@@ -402,10 +402,13 @@ q          optional text query
 entity     optional entity name
 entity_id  optional entity ID
 type       optional trace type name
-since      optional UTC epoch milliseconds
-until      optional UTC epoch milliseconds
+since      optional UTC epoch milliseconds, required format
+until      optional UTC epoch milliseconds, required format
 limit      optional result limit
 ```
+
+`since` and `until` must be supplied as UTC Unix timestamps in milliseconds.
+Date strings such as `2026-06-06` are not accepted by the HTTP API.
 
 Example:
 

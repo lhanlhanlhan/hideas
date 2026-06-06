@@ -623,11 +623,11 @@ func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
-	since, err := parseOptionalTime(*sinceStr)
+	since, err := parseOptionalSearchTime(*sinceStr, false)
 	if err != nil {
 		return err
 	}
-	until, err := parseOptionalTime(*untilStr)
+	until, err := parseOptionalSearchTime(*untilStr, true)
 	if err != nil {
 		return err
 	}
@@ -972,20 +972,29 @@ func cmdExport(store Store, args []string, stdout io.Writer) error {
 	return nil
 }
 
-func parseOptionalTime(v string) (*int64, error) {
+func parseOptionalSearchTime(v string, upperBound bool) (*int64, error) {
 	if strings.TrimSpace(v) == "" {
 		return nil, nil
 	}
 	if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 		return &n, nil
 	}
-	for _, layout := range []string{"2006-01-02", time.RFC3339} {
-		if t, err := time.Parse(layout, v); err == nil {
-			ms := t.UTC().UnixMilli()
-			return &ms, nil
+	if t, err := time.ParseInLocation("2006-01-02", v, time.Local); err == nil {
+		if upperBound {
+			t = t.Add(24*time.Hour - time.Millisecond)
 		}
+		ms := t.UTC().UnixMilli()
+		return &ms, nil
+	}
+	if t, err := time.Parse(time.RFC3339, v); err == nil {
+		ms := t.UTC().UnixMilli()
+		return &ms, nil
 	}
 	return nil, fmt.Errorf("invalid time: %s", v)
+}
+
+func parseOptionalTime(v string) (*int64, error) {
+	return parseOptionalSearchTime(v, false)
 }
 
 func writeJSON(w io.Writer, v interface{}) error {

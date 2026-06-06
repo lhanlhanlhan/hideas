@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"time"
 )
 
 const testAuthorizedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOCC/YQBOu03vEyad+jYolX7kYuacb2ZHB0KUM3eLZHv han@Huge-Han.local\n"
@@ -35,7 +36,7 @@ func runCLI(t *testing.T, args ...string) (string, string, int) {
 
 func mustOK(t *testing.T, db string, args ...string) string {
 	t.Helper()
-	full := append([]string{"--db", db}, args...)
+	full := append([]string{"--mode", "local", "--db", db}, args...)
 	out, errOut, code := runCLI(t, full...)
 	if code != 0 {
 		t.Fatalf("command failed: %v\nstdout=%s\nstderr=%s", full, out, errOut)
@@ -91,7 +92,7 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	traceOut := mustOK(t, db, "add", "今天和李雷讨论 SQLite 记忆库", "--type", "thought", "--at", "2026-06-05", "--entity-id", strconvFormat(e1))
 	traceID := firstID(t, traceOut, "trace")
 
-	out, errOut, code := runCLI(t, "--db", db, "add", "这条会歧义", "--entity", "李雷")
+	out, errOut, code := runCLI(t, "--mode", "local", "--db", db, "add", "这条会歧义", "--entity", "李雷")
 	if code == 0 || !strings.Contains(errOut, "ambiguous entity name") {
 		t.Fatalf("expected ambiguous entity failure, code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
@@ -104,6 +105,13 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	}
 	if out := mustOK(t, db, "add", "TruncateTest "+strings.Repeat("abcdef", 20), "--type", "thought"); !strings.Contains(out, "trace") {
 		t.Fatalf("long trace add output: %s", out)
+	}
+	today := time.Now().In(time.Local).Format("2006-01-02")
+	timeFilteredOut := mustOK(t, db, "add", "DateFilterTarget", "--type", "thought")
+	timeFilteredID := firstID(t, timeFilteredOut, "trace")
+	untilOut := mustOK(t, db, "search", "DateFilterTarget", "--until", today, "--format", "json")
+	if !strings.Contains(untilOut, strconvFormat(timeFilteredID)) {
+		t.Fatalf("date-based until search should include today's trace: %s", untilOut)
 	}
 	searchOut := mustOK(t, db, "search", "TruncateTest", "--limit", "1")
 	longContent := "TruncateTest " + strings.Repeat("abcdef", 20)
@@ -125,14 +133,14 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	if out := mustOK(t, db, "show", "relation", strconvFormat(relID)); !strings.Contains(out, "related_to") {
 		t.Fatalf("show relation output: %s", out)
 	}
-	out, errOut, code = runCLI(t, "--db", db, "delete", "entity", strconvFormat(e1))
+	out, errOut, code = runCLI(t, "--mode", "local", "--db", db, "delete", "entity", strconvFormat(e1))
 	if code == 0 || !strings.Contains(errOut, "delete blocked") {
 		t.Fatalf("expected blocked entity delete, code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
 	if out := mustOK(t, db, "delete", "relation", strconvFormat(relID)); !strings.Contains(out, "deleted relation "+strconvFormat(relID)) {
 		t.Fatalf("delete relation output: %s", out)
 	}
-	out, errOut, code = runCLI(t, "--db", db, "show", "relation", strconvFormat(relID))
+	out, errOut, code = runCLI(t, "--mode", "local", "--db", db, "show", "relation", strconvFormat(relID))
 	if code == 0 || !strings.Contains(errOut, "not found") {
 		t.Fatalf("expected deleted relation not found, code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
@@ -147,7 +155,7 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	if out := mustOK(t, db, "entity", "show", strconvFormat(e1)); !strings.Contains(out, "profile: 前同事") {
 		t.Fatalf("entity show output: %s", out)
 	}
-	out, errOut, code = runCLI(t, "--db", db, "delete", "trace", strconvFormat(profileID))
+	out, errOut, code = runCLI(t, "--mode", "local", "--db", db, "delete", "trace", strconvFormat(profileID))
 	if code == 0 || !strings.Contains(errOut, "delete blocked") {
 		t.Fatalf("expected blocked profile trace delete, code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
