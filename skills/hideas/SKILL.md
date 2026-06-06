@@ -15,6 +15,7 @@ Use this skill when the task involves:
 - Inspecting version or build-time information for the local binary or a remote server.
 - Inspecting the current Hideas mode, server prefix, or login state.
 - Creating links between memories, entities, and relations.
+- Updating trace timestamps after imports or corrections.
 - Updating an entity profile trace.
 - Using the `hideas` CLI as a client.
 
@@ -46,12 +47,15 @@ Prefer the smallest useful operation:
 3. Use `hideas version` to inspect the local binary version, build time, or the remote server version in remote client mode.
 4. Use `hideas status` to inspect the current mode, server prefix, and login state.
 5. Use `hideas show` to inspect context before editing or linking.
-6. Use `hideas link` only for meaningful relationships.
-7. Use `hideas profile set` for broad impressions about an entity.
-8. In remote mode, check `hideas auth status --server URL` before assuming the client is authenticated.
-9. If not authenticated, use `hideas login --server URL --identity /path/to/key`.
+6. Use `hideas trace update` to correct trace timestamps, especially for imported historical traces.
+7. Use `hideas link` only for meaningful relationships.
+8. Use `hideas profile set` for broad impressions about an entity.
+9. In remote mode, check `hideas auth status --server URL` before assuming the client is authenticated.
+10. If not authenticated, use `hideas login --server URL --identity /path/to/key`.
 
 For quick windowed retrieval, use `hideas search --recent DURATION` in the CLI, for example `--recent 24h`. This is a client-side shortcut only; it expands to `since` and `until` before the search is executed. Supported units are `h`, `w`, and `y`, with integer counts only.
+
+Search time windows use `happened_at` when present and fall back to `created_at`. If imported historical traces appear in recent searches, correct their `happened_at` with `hideas trace update ID --happened-at DATE`.
 
 Do not over-model. Only create an Entity when it is likely to be searched, linked, or summarized again.
 

@@ -369,6 +369,25 @@ Responsibilities:
 - Display connected entities, traces, and relations
 - Always include IDs in output
 
+### trace update
+
+Update trace timestamps.
+
+```bash
+hideas trace update 123 --happened-at 2026-04-19
+hideas trace update 123 --created-at 1713484800000 --updated-at 1713484800000
+```
+
+Options:
+
+```bash
+--happened-at TIMESTAMP_OR_DATE
+--created-at TIMESTAMP_OR_DATE
+--updated-at TIMESTAMP_OR_DATE
+```
+
+At least one timestamp option is required. If `--updated-at` is omitted, updating `--happened-at` or `--created-at` refreshes `updated_at` to now.
+
 ### delete
 
 Delete an object.
@@ -499,6 +518,7 @@ GET /api/v1/health
 ```http
 POST /api/v1/traces
 GET /api/v1/traces/{id}
+PATCH /api/v1/traces/{id}
 DELETE /api/v1/traces/{id}
 GET /api/v1/search
 ```

@@ -399,6 +399,41 @@ func (s *SQLiteStore) AddTrace(in AddTraceInput) (Trace, error) {
 	return s.GetTrace(traceID)
 }
 
+func (s *SQLiteStore) UpdateTrace(id int64, in UpdateTraceInput) (Trace, error) {
+	var sets []string
+	var args []interface{}
+	changed := false
+	if in.HappenedAt != nil {
+		sets = append(sets, "happened_at = ?")
+		args = append(args, *in.HappenedAt)
+		changed = true
+	}
+	if in.CreatedAt != nil {
+		sets = append(sets, "created_at = ?")
+		args = append(args, *in.CreatedAt)
+		changed = true
+	}
+	if !changed && in.UpdatedAt == nil {
+		return Trace{}, errors.New("at least one trace timestamp is required")
+	}
+	if in.UpdatedAt != nil {
+		sets = append(sets, "updated_at = ?")
+		args = append(args, *in.UpdatedAt)
+	} else {
+		sets = append(sets, "updated_at = ?")
+		args = append(args, nowMillis())
+	}
+	args = append(args, id)
+	res, err := s.db.Exec(`UPDATE traces SET `+strings.Join(sets, ", ")+` WHERE id = ?`, args...)
+	if err != nil {
+		return Trace{}, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return Trace{}, errNotFound
+	}
+	return s.GetTrace(id)
+}
+
 func (s *SQLiteStore) ensureTypeTx(tx *sql.Tx, domain int, name string) (int64, error) {
 	now := nowMillis()
 	if _, err := tx.Exec(`INSERT OR IGNORE INTO types(domain, name, created_at, updated_at) VALUES (?, ?, ?, ?)`, domain, name, now, now); err != nil {

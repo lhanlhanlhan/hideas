@@ -194,6 +194,12 @@ func (a *apiServer) traceByID(w http.ResponseWriter, r *http.Request) (interface
 	switch r.Method {
 	case http.MethodGet:
 		return a.store.Show("trace", id)
+	case http.MethodPatch:
+		var in UpdateTraceInput
+		if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+			return nil, err
+		}
+		return a.store.UpdateTrace(id, in)
 	case http.MethodDelete:
 		return a.store.Delete("trace", id, cascadeQuery(r))
 	default:
@@ -468,6 +474,12 @@ func (h *HTTPStore) Version() (VersionInfo, error) {
 func (h *HTTPStore) AddTrace(in AddTraceInput) (Trace, error) {
 	var out Trace
 	err := h.do(http.MethodPost, "/traces", in, &out)
+	return out, err
+}
+
+func (h *HTTPStore) UpdateTrace(id int64, in UpdateTraceInput) (Trace, error) {
+	var out Trace
+	err := h.do(http.MethodPatch, "/traces/"+strconv.FormatInt(id, 10), in, &out)
 	return out, err
 }
 

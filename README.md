@@ -89,6 +89,12 @@ hideas show trace 1
 hideas show entity 1
 ```
 
+Update trace timestamps:
+
+```bash
+hideas trace update 1 --happened-at 2026-04-19
+```
+
 Delete an object:
 
 ```bash

@@ -130,6 +130,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cmdDelete(store, cmdArgs, stdout)
 	case "link":
 		return cmdLink(store, cmdArgs, stdout)
+	case "trace":
+		return cmdTrace(store, cmdArgs, stdout, stderr)
 	case "entity":
 		return cmdEntity(store, cmdArgs, stdout, stderr)
 	case "profile":
@@ -183,6 +185,7 @@ Core commands:
   show            Show an entity, trace, or relation by ID
   delete          Delete an entity, trace, or relation by ID
   link            Create a relation
+  trace           Manage traces
   entity          Manage entities
   profile         Show or set an entity profile
   type            List or add types
@@ -245,6 +248,8 @@ func writeCommandHelp(w io.Writer, args []string) {
 		fmt.Fprint(w, "Usage: hideas delete entity|trace|relation ID [--cascade]\n")
 	case "link":
 		fmt.Fprint(w, "Usage: hideas link FROM_KIND FROM_ID TO_KIND TO_ID --type TYPE\n")
+	case "trace":
+		fmt.Fprint(w, "Usage: hideas trace update ID [--happened-at TIME] [--created-at TIME] [--updated-at TIME]\n")
 	case "entity":
 		fmt.Fprint(w, "Usage: hideas entity add|list|show|rename ...\n")
 		fmt.Fprint(w, "  add NAME [--type TYPE]\n  list [--type TYPE]\n  show ID\n  rename ID NAME\n")
@@ -713,6 +718,70 @@ func cmdShow(store Store, args []string, stdout io.Writer) error {
 		fmt.Fprintf(stdout, "trace %d [%s] %s\n", t.ID, t.TypeName, t.Content)
 	}
 	return nil
+}
+
+func cmdTrace(store Store, args []string, stdout, stderr io.Writer) error {
+	if len(args) == 0 || firstArgIsHelp(args) {
+		writeCommandHelp(stdout, []string{"trace"})
+		return nil
+	}
+	switch args[0] {
+	case "update":
+		fs := flag.NewFlagSet("trace update", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		fs.Usage = func() { writeCommandHelp(stderr, []string{"trace"}) }
+		happenedAtStr := fs.String("happened-at", "", "happened time")
+		createdAtStr := fs.String("created-at", "", "created time")
+		updatedAtStr := fs.String("updated-at", "", "updated time")
+		pos, err := parseInterspersed(fs, args[1:])
+		if err != nil {
+			if errors.Is(err, flag.ErrHelp) {
+				return nil
+			}
+			return err
+		}
+		if len(pos) != 1 {
+			return errors.New("usage: trace update ID [--happened-at TIME] [--created-at TIME] [--updated-at TIME]")
+		}
+		id, err := strconv.ParseInt(pos[0], 10, 64)
+		if err != nil {
+			return err
+		}
+		in := UpdateTraceInput{}
+		if strings.TrimSpace(*happenedAtStr) != "" {
+			t, err := parseOptionalTime(*happenedAtStr)
+			if err != nil {
+				return err
+			}
+			in.HappenedAt = t
+		}
+		if strings.TrimSpace(*createdAtStr) != "" {
+			t, err := parseOptionalTime(*createdAtStr)
+			if err != nil {
+				return err
+			}
+			in.CreatedAt = t
+		}
+		if strings.TrimSpace(*updatedAtStr) != "" {
+			t, err := parseOptionalTime(*updatedAtStr)
+			if err != nil {
+				return err
+			}
+			in.UpdatedAt = t
+		}
+		t, err := store.UpdateTrace(id, in)
+		if err != nil {
+			return err
+		}
+		fmt.Fprintf(stdout, "trace %d updated", t.ID)
+		if t.HappenedAt != nil {
+			fmt.Fprintf(stdout, " happened_at=%d", *t.HappenedAt)
+		}
+		fmt.Fprintf(stdout, " created_at=%d updated_at=%d\n", t.CreatedAt, t.UpdatedAt)
+		return nil
+	default:
+		return fmt.Errorf("unknown trace subcommand: %s", args[0])
+	}
 }
 
 func cmdDelete(store Store, args []string, stdout io.Writer) error {

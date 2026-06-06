@@ -44,6 +44,18 @@ Search output in text mode should show concise summaries, not full trace bodies.
 
 `--recent` is a CLI shortcut that expands to a time window ending at now. Supported units are `h`, `w`, and `y`, and the numeric part must be an integer, for example `24h`, `2w`, or `1y`. Do not combine `--recent` with `--since` or `--until`.
 
+Search time filters use `happened_at` when present and fall back to `created_at`. For imported historical material, set `happened_at` to the real event or source date; otherwise recent searches may include old content that was imported recently.
+
+Update trace timestamps:
+
+```bash
+hideas trace update 123 --happened-at 2026-04-19
+hideas trace update 123 --created-at 1713484800000
+hideas trace update 123 --updated-at 1713484800000
+```
+
+At least one timestamp option is required. If `--updated-at` is omitted, changing `--happened-at` or `--created-at` refreshes `updated_at` to now.
+
 Version:
 
 ```bash

@@ -362,6 +362,32 @@ Response data:
 }
 ```
 
+### PATCH /traces/{id}
+
+Updates trace timestamps.
+
+Request:
+
+```json
+{
+  "happened_at": 1713484800000,
+  "created_at": 1713484800000,
+  "updated_at": 1713484800000
+}
+```
+
+Fields:
+
+```text
+happened_at  optional UTC epoch milliseconds
+created_at   optional UTC epoch milliseconds
+updated_at   optional UTC epoch milliseconds
+```
+
+At least one field is required. If `updated_at` is omitted, the server updates it to the current time.
+
+Response data is the updated trace object.
+
 ### DELETE /traces/{id}
 
 Deletes a trace.

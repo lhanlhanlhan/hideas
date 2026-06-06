@@ -94,6 +94,12 @@ type AddTraceInput struct {
 	Entities  []string
 }
 
+type UpdateTraceInput struct {
+	HappenedAt *int64 `json:"happened_at,omitempty"`
+	CreatedAt  *int64 `json:"created_at,omitempty"`
+	UpdatedAt  *int64 `json:"updated_at,omitempty"`
+}
+
 type SearchInput struct {
 	Query      string
 	EntityID   *int64
@@ -127,6 +133,7 @@ type Store interface {
 	Path() string
 
 	AddTrace(AddTraceInput) (Trace, error)
+	UpdateTrace(id int64, in UpdateTraceInput) (Trace, error)
 	Search(SearchInput) (SearchResult, error)
 	Show(kind string, id int64) (ShowResult, error)
 	Delete(kind string, id int64, cascade bool) (DeleteResult, error)

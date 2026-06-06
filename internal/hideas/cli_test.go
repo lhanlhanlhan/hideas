@@ -91,6 +91,15 @@ func TestLocalCLIAllCommands(t *testing.T) {
 
 	traceOut := mustOK(t, db, "add", "今天和李雷讨论 SQLite 记忆库", "--type", "thought", "--at", "2026-06-05", "--entity-id", strconvFormat(e1))
 	traceID := firstID(t, traceOut, "trace")
+	if out := mustOK(t, db, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-04-19"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
+		t.Fatalf("trace update output: %s", out)
+	}
+	if out := mustOK(t, db, "search", "SQLite", "--since", "2026-06-01", "--format", "json"); strings.Contains(out, strconvFormat(traceID)) {
+		t.Fatalf("updated trace happened_at should affect date filtering: %s", out)
+	}
+	if out := mustOK(t, db, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-06-05"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
+		t.Fatalf("trace update restore output: %s", out)
+	}
 
 	out, errOut, code := runCLI(t, "--mode", "local", "--db", db, "add", "这条会歧义", "--entity", "李雷")
 	if code == 0 || !strings.Contains(errOut, "ambiguous entity name") {
@@ -231,6 +240,11 @@ func TestServerModeHTTPAPI(t *testing.T) {
 	e := apiDo[Entity](t, server.URL, "secret", http.MethodPost, "/hideas/api/v1/entities", map[string]string{"Name": "Alice", "Type": "person"})
 	tr := apiDo[Trace](t, server.URL, "secret", http.MethodPost, "/hideas/api/v1/traces", AddTraceInput{Content: "Alice mentioned SQLite", TypeName: "event", EntityIDs: []int64{e.ID}})
 	tr2 := apiDo[Trace](t, server.URL, "secret", http.MethodPost, "/hideas/api/v1/traces", AddTraceInput{Content: "Alice mentioned SQLite again", TypeName: "event", EntityIDs: []int64{e.ID}})
+	happened := mustMillis(t, "2026-04-19")
+	updated := apiDo[Trace](t, server.URL, "secret", http.MethodPatch, "/hideas/api/v1/traces/"+strconvFormat(tr.ID), UpdateTraceInput{HappenedAt: &happened})
+	if updated.HappenedAt == nil || *updated.HappenedAt != happened {
+		t.Fatalf("trace update response: %+v", updated)
+	}
 	search := apiDo[SearchResult](t, server.URL, "secret", http.MethodGet, "/hideas/api/v1/search?q=SQLite&limit=1", nil)
 	if len(search.Traces) != 1 || search.Traces[0].ID != tr2.ID || !search.TracesHasMore {
 		t.Fatalf("search response: %+v", search)
@@ -279,6 +293,12 @@ func TestRemoteCLIAllCommands(t *testing.T) {
 	e1 := firstID(t, mustRemoteOK(t, server.URL, "entity", "add", "Remote 李雷", "--type", "person"), "entity")
 	e2 := firstID(t, mustRemoteOK(t, server.URL, "entity", "add", "远端项目", "--type", "project"), "entity")
 	traceID := firstID(t, mustRemoteOK(t, server.URL, "add", "远端 SQLite 记录", "--type", "thought", "--entity-id", strconvFormat(e1)), "trace")
+	if out := mustRemoteOK(t, server.URL, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-04-19"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
+		t.Fatalf("remote trace update output: %s", out)
+	}
+	if out := mustRemoteOK(t, server.URL, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-06-05"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
+		t.Fatalf("remote trace update restore output: %s", out)
+	}
 
 	if out := mustRemoteOK(t, server.URL, "search", "SQLite", "--entity-id", strconvFormat(e1)); !strings.Contains(out, "远端 SQLite") {
 		t.Fatalf("remote search output: %s", out)
@@ -610,4 +630,13 @@ func apiDoRaw(t *testing.T, base, token, method, path string, body interface{}) 
 
 func strconvFormat(v int64) string {
 	return strconv.FormatInt(v, 10)
+}
+
+func mustMillis(t *testing.T, v string) int64 {
+	t.Helper()
+	parsed, err := time.Parse("2006-01-02", v)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return parsed.UTC().UnixMilli()
 }
