@@ -207,6 +207,11 @@ func TestServerModeHTTPAPI(t *testing.T) {
 	}
 	resp.Body.Close()
 
+	version := apiDo[VersionInfo](t, server.URL, "", http.MethodGet, "/hideas/api/v1/version", nil)
+	if version.Version == "" || version.BuildTime == "" {
+		t.Fatalf("version response: %+v", version)
+	}
+
 	e := apiDo[Entity](t, server.URL, "secret", http.MethodPost, "/hideas/api/v1/entities", map[string]string{"Name": "Alice", "Type": "person"})
 	tr := apiDo[Trace](t, server.URL, "secret", http.MethodPost, "/hideas/api/v1/traces", AddTraceInput{Content: "Alice mentioned SQLite", TypeName: "event", EntityIDs: []int64{e.ID}})
 	tr2 := apiDo[Trace](t, server.URL, "secret", http.MethodPost, "/hideas/api/v1/traces", AddTraceInput{Content: "Alice mentioned SQLite again", TypeName: "event", EntityIDs: []int64{e.ID}})
@@ -418,6 +423,49 @@ func TestRemoteCLIUsesDefaultModeConfig(t *testing.T) {
 	}
 }
 
+func TestVersionCommands(t *testing.T) {
+	out, errOut, code := runCLI(t, "--version")
+	if code != 0 {
+		t.Fatalf("--version failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "Hideas ") || !strings.Contains(out, "build time:") {
+		t.Fatalf("unexpected version output: %s", out)
+	}
+
+	out, errOut, code = runCLI(t)
+	if code != 0 {
+		t.Fatalf("no-args run failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "Hideas ") || !strings.Contains(out, "build time:") || !strings.Contains(out, "Usage:") {
+		t.Fatalf("unexpected no-args output: %s", out)
+	}
+
+	out, errOut, code = runCLI(t, "help")
+	if code != 0 {
+		t.Fatalf("help failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "Hideas ") || !strings.Contains(out, "build time:") || !strings.Contains(out, "Usage:") {
+		t.Fatalf("unexpected help output: %s", out)
+	}
+
+	store := newTestStore(t)
+	server := httptest.NewServer(NewHTTPHandler(store, nil, "/"))
+	defer server.Close()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	if err := os.WriteFile(configPath, []byte("mode = \"remote-client\"\nserver = \""+server.URL+"\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	out, errOut, code = runCLI(t, "--config", configPath, "version")
+	if code != 0 {
+		t.Fatalf("remote version failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "Hideas ") || !strings.Contains(out, "build time:") {
+		t.Fatalf("unexpected remote version output: %s", out)
+	}
+}
+
 func TestDefaultDBPathIsAppDataPath(t *testing.T) {
 	path := defaultDBPath()
 	if filepath.Base(path) != "hideas.sqlite" {
@@ -436,7 +484,7 @@ func TestCLIHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("root help failed stdout=%s stderr=%s", out, errOut)
 	}
-	if !strings.Contains(errOut, "Usage:") || !strings.Contains(errOut, "hideas help COMMAND") {
+	if !strings.Contains(errOut, "Hideas ") || !strings.Contains(errOut, "build time:") || !strings.Contains(errOut, "Usage:") || !strings.Contains(errOut, "hideas help COMMAND") {
 		t.Fatalf("unexpected root help stderr=%s", errOut)
 	}
 
@@ -444,7 +492,7 @@ func TestCLIHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("help entity failed stdout=%s stderr=%s", out, errOut)
 	}
-	if !strings.Contains(out, "hideas entity add|list|show|rename") {
+	if !strings.Contains(out, "Hideas ") || !strings.Contains(out, "build time:") || !strings.Contains(out, "hideas entity add|list|show|rename") {
 		t.Fatalf("unexpected entity help output: %s", out)
 	}
 
@@ -452,7 +500,7 @@ func TestCLIHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("entity add help failed stdout=%s stderr=%s", out, errOut)
 	}
-	if !strings.Contains(errOut, "Usage: hideas entity add NAME") {
+	if !strings.Contains(errOut, "Hideas ") || !strings.Contains(errOut, "build time:") || !strings.Contains(errOut, "Usage: hideas entity add NAME") {
 		t.Fatalf("unexpected entity add help stderr=%s", errOut)
 	}
 
@@ -460,7 +508,7 @@ func TestCLIHelp(t *testing.T) {
 	if code != 0 {
 		t.Fatalf("show help failed stdout=%s stderr=%s", out, errOut)
 	}
-	if !strings.Contains(out, "Usage: hideas show entity|trace|relation ID") {
+	if !strings.Contains(out, "Hideas ") || !strings.Contains(out, "build time:") || !strings.Contains(out, "Usage: hideas show entity|trace|relation ID") {
 		t.Fatalf("unexpected show help output: %s", out)
 	}
 }

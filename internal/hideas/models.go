@@ -72,6 +72,11 @@ type CheckResult struct {
 	Errors []string `json:"errors"`
 }
 
+type VersionInfo struct {
+	Version   string `json:"version"`
+	BuildTime string `json:"build_time"`
+}
+
 type DeleteResult struct {
 	Kind               string  `json:"kind"`
 	ID                 int64   `json:"id"`

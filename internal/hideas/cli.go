@@ -38,6 +38,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	global.Usage = func() {
 		writeRootHelp(stderr)
 	}
+	showVersion := global.Bool("version", false, "show version")
 	mode := global.String("mode", "", "default operating mode (local|remote-client)")
 	dbPath := global.String("db", "", "SQLite database path")
 	serverURL := global.String("server", "", "hideas server URL")
@@ -51,17 +52,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
+	if *showVersion {
+		fmt.Fprint(stdout, formatVersionInfo(localVersionInfo()))
+		return nil
+	}
 	resolvedConfigPath := *configPath
 	if resolvedConfigPath == "" {
 		resolvedConfigPath = defaultConfigPath()
-	}
-	cfg, err := loadConfig(resolvedConfigPath)
-	if err != nil {
-		return err
-	}
-	settings, err := resolveGlobalConfig(resolvedConfigPath, *dbPath, *mode, *serverURL, *token, *identity, *credentialsPath, cfg)
-	if err != nil {
-		return err
 	}
 	rest := global.Args()
 	if len(rest) == 0 {
@@ -71,12 +68,25 @@ func run(args []string, stdout, stderr io.Writer) error {
 	cmd := rest[0]
 	cmdArgs := rest[1:]
 	if cmd == "help" {
+		if len(cmdArgs) == 0 {
+			writeRootHelp(stdout)
+			return nil
+		}
 		writeCommandHelp(stdout, cmdArgs)
 		return nil
 	}
 	if isHelpArg(cmd) {
 		writeRootHelp(stdout)
 		return nil
+	}
+
+	cfg, err := loadConfig(resolvedConfigPath)
+	if err != nil {
+		return err
+	}
+	settings, err := resolveGlobalConfig(resolvedConfigPath, *dbPath, *mode, *serverURL, *token, *identity, *credentialsPath, cfg)
+	if err != nil {
+		return err
 	}
 
 	if cmd == "serve" {
@@ -93,6 +103,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	if cmd == "status" {
 		return cmdStatus(settings, stdout)
+	}
+	if cmd == "version" {
+		return cmdVersion(settings, stdout)
 	}
 
 	store, err := openStore(settings)
@@ -154,6 +167,7 @@ func firstArgIsHelp(args []string) bool {
 }
 
 func writeRootHelp(w io.Writer) {
+	writeVersionInfo(w, localVersionInfo())
 	fmt.Fprint(w, `Hideas is a personal memory system with local SQLite mode and remote client/server mode.
 
 Usage:
@@ -162,6 +176,7 @@ Usage:
 
 Core commands:
  init            Initialize the local database
+  version         Show the current version and build time
   status          Show the current operating mode and remote status
   add             Add a trace
   search          Search traces and entities
@@ -182,6 +197,7 @@ Remote auth commands:
 
 Global options:
   --db PATH             SQLite database path
+  --version             Show version and build time
   --mode MODE           Default operating mode (local|remote-client)
   --server URL          Hideas server URL for remote mode
   --config PATH         Config file path
@@ -191,6 +207,7 @@ Global options:
 
 Examples:
   hideas init
+  hideas version
   hideas status
   hideas add "Discussed SQLite indexing" --type thought
   hideas search "SQLite" --format json
@@ -206,6 +223,7 @@ func writeCommandHelp(w io.Writer, args []string) {
 		writeRootHelp(w)
 		return
 	}
+	writeVersionInfo(w, localVersionInfo())
 	switch args[0] {
 	case "serve":
 		fmt.Fprint(w, "Usage: hideas serve [--db PATH] [--host HOST] [--port PORT] [--base-path PATH] [--token TOKEN] [--authorized-keys PATH]\n")
@@ -241,6 +259,10 @@ func writeCommandHelp(w io.Writer, args []string) {
 	default:
 		fmt.Fprintf(w, "unknown help topic: %s\n", args[0])
 	}
+}
+
+func writeVersionInfo(w io.Writer, info VersionInfo) {
+	fmt.Fprint(w, formatVersionInfo(info))
 }
 
 func resolveGlobalConfig(configPath, cliDB, cliMode, cliServer, cliToken, cliIdentity, cliCredentials string, cfg Config) (GlobalSettings, error) {
@@ -463,6 +485,20 @@ func cmdStatus(settings GlobalSettings, stdout io.Writer) error {
 		return nil
 	}
 	fmt.Fprintf(stdout, "login: logged in until %s\n", time.UnixMilli(entry.ExpiresAt).UTC().Format(time.RFC3339))
+	return nil
+}
+
+func cmdVersion(settings GlobalSettings, stdout io.Writer) error {
+	if settings.Mode == ModeRemoteClient && strings.TrimSpace(settings.Server) != "" {
+		store := NewHTTPStore(settings.Server, settings.Token)
+		info, err := store.Version()
+		if err != nil {
+			return err
+		}
+		writeVersionInfo(stdout, info)
+		return nil
+	}
+	writeVersionInfo(stdout, localVersionInfo())
 	return nil
 }
 
@@ -741,7 +777,10 @@ func cmdEntity(store Store, args []string, stdout, stderr io.Writer) error {
 	case "add":
 		fs := flag.NewFlagSet("entity add", flag.ContinueOnError)
 		fs.SetOutput(stderr)
-		fs.Usage = func() { fmt.Fprint(stderr, "Usage: hideas entity add NAME [--type TYPE]\n") }
+		fs.Usage = func() {
+			writeVersionInfo(stderr, localVersionInfo())
+			fmt.Fprint(stderr, "Usage: hideas entity add NAME [--type TYPE]\n")
+		}
 		typeName := fs.String("type", "", "entity type")
 		pos, err := parseInterspersed(fs, args[1:])
 		if err != nil {
@@ -761,7 +800,10 @@ func cmdEntity(store Store, args []string, stdout, stderr io.Writer) error {
 	case "list":
 		fs := flag.NewFlagSet("entity list", flag.ContinueOnError)
 		fs.SetOutput(stderr)
-		fs.Usage = func() { fmt.Fprint(stderr, "Usage: hideas entity list [--type TYPE]\n") }
+		fs.Usage = func() {
+			writeVersionInfo(stderr, localVersionInfo())
+			fmt.Fprint(stderr, "Usage: hideas entity list [--type TYPE]\n")
+		}
 		typeName := fs.String("type", "", "entity type")
 		if err := fs.Parse(args[1:]); err != nil {
 			if errors.Is(err, flag.ErrHelp) {
@@ -782,6 +824,7 @@ func cmdEntity(store Store, args []string, stdout, stderr io.Writer) error {
 		}
 	case "show":
 		if len(args) > 1 && wantsHelp(args[1:]) {
+			writeVersionInfo(stdout, localVersionInfo())
 			fmt.Fprint(stdout, "Usage: hideas entity show ID\n")
 			return nil
 		}
@@ -791,6 +834,7 @@ func cmdEntity(store Store, args []string, stdout, stderr io.Writer) error {
 		return cmdShow(store, []string{"entity", args[1]}, stdout)
 	case "rename":
 		if len(args) > 1 && wantsHelp(args[1:]) {
+			writeVersionInfo(stdout, localVersionInfo())
 			fmt.Fprint(stdout, "Usage: hideas entity rename ID NAME\n")
 			return nil
 		}

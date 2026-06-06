@@ -79,6 +79,7 @@ Search:
 ```bash
 hideas search "SQLite"
 hideas status
+hideas version
 ```
 
 Show an object:
@@ -102,6 +103,7 @@ Get command help:
 hideas --help
 hideas help entity
 hideas entity add --help
+hideas --version
 ```
 
 ## Operating Modes
@@ -185,9 +187,10 @@ Login once with an SSH private key:
 hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
 hideas auth status --server https://example.com/hideas/
 hideas status
+hideas version
 ```
 
-The issued bearer token is stored in a separate credentials file. The config file stores the default mode, remote server prefix, and credentials path.
+The issued bearer token is stored in a separate credentials file. The config file stores the default mode, remote server prefix, and credentials path. `hideas version` queries the remote server version when running in remote client mode.
 
 ## HTTP API
 

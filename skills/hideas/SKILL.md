@@ -12,6 +12,7 @@ Use this skill when the task involves:
 - Recording a user's memory, note, event, thought, fact, quote, or reflection into Hideas.
 - Searching or retrieving prior memory from Hideas.
 - Inspecting an Entity, Trace, Relation, or Type.
+- Inspecting version or build-time information for the local binary or a remote server.
 - Inspecting the current Hideas mode, server prefix, or login state.
 - Creating links between memories, entities, and relations.
 - Updating an entity profile trace.
@@ -42,12 +43,13 @@ Prefer the smallest useful operation:
 
 1. Use `hideas add` for a new memory trace.
 2. Use `hideas search` before assuming a memory does not exist.
-3. Use `hideas status` to inspect the current mode, server prefix, and login state.
-4. Use `hideas show` to inspect context before editing or linking.
-5. Use `hideas link` only for meaningful relationships.
-6. Use `hideas profile set` for broad impressions about an entity.
-7. In remote mode, check `hideas auth status --server URL` before assuming the client is authenticated.
-8. If not authenticated, use `hideas login --server URL --identity /path/to/key`.
+3. Use `hideas version` to inspect the local binary version, build time, or the remote server version in remote client mode.
+4. Use `hideas status` to inspect the current mode, server prefix, and login state.
+5. Use `hideas show` to inspect context before editing or linking.
+6. Use `hideas link` only for meaningful relationships.
+7. Use `hideas profile set` for broad impressions about an entity.
+8. In remote mode, check `hideas auth status --server URL` before assuming the client is authenticated.
+9. If not authenticated, use `hideas login --server URL --identity /path/to/key`.
 
 Do not over-model. Only create an Entity when it is likely to be searched, linked, or summarized again.
 

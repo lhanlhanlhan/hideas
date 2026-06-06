@@ -201,6 +201,8 @@ json
 
 The same command should return the same JSON schema in local and remote client modes.
 
+The CLI should also support `hideas --version` to print the local binary version and build time.
+
 ## Help
 
 The CLI should provide built-in help at both the root and subcommand levels.
@@ -249,6 +251,17 @@ Responsibilities:
 - Listen on configured host and port
 - Expose the standard HTTP API
 - Return consistent response envelopes
+
+### version
+
+Show the current version and build time.
+
+```bash
+hideas --version
+hideas version
+```
+
+When the CLI is running in remote client mode, `hideas version` should query the server version endpoint and print the server's version and build time.
 
 ### status
 

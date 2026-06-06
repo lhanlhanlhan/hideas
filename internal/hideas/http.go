@@ -41,6 +41,7 @@ func NewHTTPHandler(store Store, auth *serverAuth, basePath string) http.Handler
 	mux.Handle(prefix+"/auth/challenge", api.wrapPublic(api.authChallenge))
 	mux.Handle(prefix+"/auth/login", api.wrapPublic(api.authLogin))
 	mux.Handle(prefix+"/health", api.wrap(api.health))
+	mux.Handle(prefix+"/version", api.wrapPublic(api.version))
 	mux.Handle(prefix+"/traces", api.wrap(api.traces))
 	mux.Handle(prefix+"/traces/", api.wrap(api.traceByID))
 	mux.Handle(prefix+"/search", api.wrap(api.search))
@@ -165,6 +166,13 @@ func (a *apiServer) health(w http.ResponseWriter, r *http.Request) (interface{},
 		return nil, fmt.Errorf("unsupported method")
 	}
 	return map[string]string{"status": "ok"}, nil
+}
+
+func (a *apiServer) version(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	if r.Method != http.MethodGet {
+		return nil, fmt.Errorf("unsupported method")
+	}
+	return localVersionInfo(), nil
 }
 
 func (a *apiServer) traces(w http.ResponseWriter, r *http.Request) (interface{}, error) {
@@ -448,6 +456,12 @@ func (h *HTTPStore) AuthLogin(challengeID, publicKey, signature string) (authLog
 func (h *HTTPStore) Health() (map[string]string, error) {
 	var out map[string]string
 	err := h.do(http.MethodGet, "/health", nil, &out)
+	return out, err
+}
+
+func (h *HTTPStore) Version() (VersionInfo, error) {
+	var out VersionInfo
+	err := h.do(http.MethodGet, "/version", nil, &out)
 	return out, err
 }
 

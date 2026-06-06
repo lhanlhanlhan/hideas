@@ -41,6 +41,16 @@ hideas search "SQLite" --format json
 
 Search output in text mode should show concise summaries, not full trace bodies. Search responses include `traces_has_more` and `entities_has_more` so clients can tell when the result set was truncated by `--limit`.
 
+Version:
+
+```bash
+hideas --version
+hideas version
+hideas version --server https://example.com/hideas/
+```
+
+`hideas --version` prints the local binary version and build time. In remote client mode, `hideas version` queries the connected server's version endpoint.
+
 Show context:
 
 ```bash

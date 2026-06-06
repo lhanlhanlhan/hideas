@@ -68,6 +68,23 @@ Authorization: Bearer TOKEN
 
 If no token or authorized key file is configured, authentication is not required.
 
+## Version
+
+### GET /version
+
+Returns the version and build time of the server binary.
+
+Response data:
+
+```json
+{
+  "version": "v0.1.5",
+  "build_time": "2026-06-06T12:00:00Z"
+}
+```
+
+The version endpoint is public.
+
 ## Content Type
 
 Request bodies should use JSON:
