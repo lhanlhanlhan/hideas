@@ -11,7 +11,9 @@ package hideas
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -32,10 +34,12 @@ type apiError struct {
 	Details interface{} `json:"details,omitempty"`
 }
 
-func NewHTTPHandler(store Store, token, basePath string) http.Handler {
+func NewHTTPHandler(store Store, auth *serverAuth, basePath string) http.Handler {
 	mux := http.NewServeMux()
-	api := &apiServer{store: store, token: token}
+	api := &apiServer{store: store, auth: auth}
 	prefix := normalizeBasePath(basePath) + "api/v1"
+	mux.Handle(prefix+"/auth/challenge", api.wrapPublic(api.authChallenge))
+	mux.Handle(prefix+"/auth/login", api.wrapPublic(api.authLogin))
 	mux.Handle(prefix+"/health", api.wrap(api.health))
 	mux.Handle(prefix+"/traces", api.wrap(api.traces))
 	mux.Handle(prefix+"/traces/", api.wrap(api.traceByID))
@@ -67,15 +71,23 @@ func normalizeBasePath(base string) string {
 
 type apiServer struct {
 	store Store
-	token string
+	auth  *serverAuth
 }
 
 type handlerFunc func(http.ResponseWriter, *http.Request) (interface{}, error)
 
 func (a *apiServer) wrap(fn handlerFunc) http.HandlerFunc {
+	return a.wrapWithAuth(true, fn)
+}
+
+func (a *apiServer) wrapPublic(fn handlerFunc) http.HandlerFunc {
+	return a.wrapWithAuth(false, fn)
+}
+
+func (a *apiServer) wrapWithAuth(requireAuth bool, fn handlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		if a.token != "" && r.Header.Get("Authorization") != "Bearer "+a.token {
+		if requireAuth && a.auth != nil && !a.auth.checkBearer(r.Header.Get("Authorization")) {
 			w.WriteHeader(http.StatusUnauthorized)
 			_ = json.NewEncoder(w).Encode(apiResponse{OK: false, Error: &apiError{Code: "unauthorized", Message: "unauthorized"}})
 			return
@@ -91,10 +103,13 @@ func (a *apiServer) wrap(fn handlerFunc) http.HandlerFunc {
 }
 
 func statusForError(err error) int {
+	if strings.Contains(err.Error(), "unauthorized") {
+		return http.StatusUnauthorized
+	}
 	if strings.Contains(err.Error(), "not found") {
 		return http.StatusNotFound
 	}
-	if strings.Contains(err.Error(), "ambiguous") || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "unknown") {
+	if strings.Contains(err.Error(), "ambiguous") || strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "unknown") || strings.Contains(err.Error(), "invalid") || strings.Contains(err.Error(), "expired") {
 		return http.StatusBadRequest
 	}
 	return http.StatusInternalServerError
@@ -103,6 +118,8 @@ func statusForError(err error) int {
 func codeForError(err error) string {
 	msg := err.Error()
 	switch {
+	case strings.Contains(msg, "unauthorized"):
+		return "unauthorized"
 	case strings.Contains(msg, "ambiguous entity"):
 		return "ambiguous_entity"
 	case strings.Contains(msg, "not found"):
@@ -110,6 +127,35 @@ func codeForError(err error) string {
 	default:
 		return "error"
 	}
+}
+
+func (a *apiServer) authChallenge(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	if r.Method != http.MethodPost {
+		return nil, fmt.Errorf("unsupported method")
+	}
+	if a.auth == nil {
+		return nil, errors.New("ssh login is not configured")
+	}
+	return a.auth.issueChallenge()
+}
+
+func (a *apiServer) authLogin(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	if r.Method != http.MethodPost {
+		return nil, fmt.Errorf("unsupported method")
+	}
+	var in struct {
+		ChallengeID string `json:"challenge_id"`
+		PublicKey   string `json:"public_key"`
+		Signature   string `json:"signature"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
+		return nil, err
+	}
+	sig, err := base64.StdEncoding.DecodeString(in.Signature)
+	if err != nil {
+		return nil, errors.New("invalid signature")
+	}
+	return a.auth.login(in.ChallengeID, in.PublicKey, sig)
 }
 
 func (a *apiServer) health(w http.ResponseWriter, r *http.Request) (interface{}, error) {
@@ -365,6 +411,28 @@ func (h *HTTPStore) do(method, path string, body interface{}, out interface{}) e
 }
 
 func errorsFromAPI(msg string) error { return fmt.Errorf("%s", msg) }
+
+func (h *HTTPStore) AuthChallenge() (authChallengeResponse, error) {
+	var out authChallengeResponse
+	err := h.do(http.MethodPost, "/auth/challenge", map[string]string{"client": "hideas-cli"}, &out)
+	return out, err
+}
+
+func (h *HTTPStore) AuthLogin(challengeID, publicKey, signature string) (authLoginResponse, error) {
+	var out authLoginResponse
+	err := h.do(http.MethodPost, "/auth/login", map[string]string{
+		"challenge_id": challengeID,
+		"public_key":   publicKey,
+		"signature":    signature,
+	}, &out)
+	return out, err
+}
+
+func (h *HTTPStore) Health() (map[string]string, error) {
+	var out map[string]string
+	err := h.do(http.MethodGet, "/health", nil, &out)
+	return out, err
+}
 
 func (h *HTTPStore) AddTrace(in AddTraceInput) (Trace, error) {
 	var out Trace

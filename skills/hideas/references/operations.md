@@ -87,6 +87,35 @@ hideas export --format json
 hideas export --format markdown
 ```
 
+## Remote Authentication
+
+When using a remote Hideas server, prefer the CLI login flow instead of passing bearer tokens around manually.
+
+Check whether the client is already authenticated:
+
+```bash
+hideas auth status --server https://example.com/hideas/
+```
+
+If not logged in, authenticate with an SSH private key:
+
+```bash
+hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
+```
+
+Log out and remove the stored token:
+
+```bash
+hideas logout --server https://example.com/hideas/
+```
+
+After login succeeds, normal CLI commands can use the remote server directly:
+
+```bash
+hideas --server https://example.com/hideas/ search "SQLite"
+hideas --server https://example.com/hideas/ add "新的记忆" --type thought
+```
+
 ## Config
 
 Default config path:
@@ -99,6 +128,9 @@ Supported keys:
 
 ```text
 db = "/path/to/hideas.sqlite"
+server = "https://example.com/hideas/"
+identity = "~/.ssh/id_ed25519"
+credentials = "~/.hideas/credentials.json"
 ```
 
 Precedence:

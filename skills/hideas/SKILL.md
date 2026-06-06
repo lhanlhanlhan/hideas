@@ -42,6 +42,8 @@ Prefer the smallest useful operation:
 3. Use `hideas show` to inspect context before editing or linking.
 4. Use `hideas link` only for meaningful relationships.
 5. Use `hideas profile set` for broad impressions about an entity.
+6. In remote mode, check `hideas auth status --server URL` before assuming the client is authenticated.
+7. If not authenticated, use `hideas login --server URL --identity /path/to/key`.
 
 Do not over-model. Only create an Entity when it is likely to be searched, linked, or summarized again.
 

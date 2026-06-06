@@ -15,6 +15,17 @@ import (
 	"testing"
 )
 
+const testAuthorizedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOCC/YQBOu03vEyad+jYolX7kYuacb2ZHB0KUM3eLZHv han@Huge-Han.local\n"
+
+const testPrivateKey = `-----BEGIN OPENSSH PRIVATE KEY-----
+b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
+QyNTUxOQAAACDggv2EATrtN7xMmnfo2KJV+5GLmnG9mRwdClDN3i2R7wAAAJj1b8sw9W/L
+MAAAAAtzc2gtZWQyNTUxOQAAACDggv2EATrtN7xMmnfo2KJV+5GLmnG9mRwdClDN3i2R7w
+AAAEC3U2RzUJh6B+/hlxX1PC5RZUuu0YfwLhnfeWFWePoifOCC/YQBOu03vEyad+jYolX7
+kYuacb2ZHB0KUM3eLZHvAAAAEmhhbkBIdWdlLUhhbi5sb2NhbAECAw==
+-----END OPENSSH PRIVATE KEY-----
+`
+
 func runCLI(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 	var out, err bytes.Buffer
@@ -138,7 +149,11 @@ func TestLocalCLIAllCommands(t *testing.T) {
 
 func TestServerModeHTTPAPI(t *testing.T) {
 	store := newTestStore(t)
-	handler := NewHTTPHandler(store, "secret", "/hideas/")
+	auth, err := newServerAuth(ServerAuthConfig{StaticToken: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	handler := NewHTTPHandler(store, auth, "/hideas/")
 	server := httptest.NewServer(handler)
 	defer server.Close()
 
@@ -188,7 +203,7 @@ func TestServerModeHTTPAPI(t *testing.T) {
 
 func TestRemoteCLIAllCommands(t *testing.T) {
 	store := newTestStore(t)
-	server := httptest.NewServer(NewHTTPHandler(store, "", "/"))
+	server := httptest.NewServer(NewHTTPHandler(store, nil, "/"))
 	defer server.Close()
 
 	e1 := firstID(t, mustRemoteOK(t, server.URL, "entity", "add", "Remote 李雷", "--type", "person"), "entity")
@@ -236,7 +251,7 @@ func TestRemoteCLIAllCommands(t *testing.T) {
 
 func TestRemoteCLIUsesConfigFile(t *testing.T) {
 	store := newTestStore(t)
-	server := httptest.NewServer(NewHTTPHandler(store, "", "/"))
+	server := httptest.NewServer(NewHTTPHandler(store, nil, "/"))
 	defer server.Close()
 
 	configPath := filepath.Join(t.TempDir(), "config")
@@ -253,6 +268,55 @@ func TestRemoteCLIUsesConfigFile(t *testing.T) {
 	}
 	if out := mustRemoteOK(t, server.URL, "entity", "list"); !strings.Contains(out, "Config Server") {
 		t.Fatalf("config remote did not use server: %s", out)
+	}
+}
+
+func TestRemoteCLILoginAndAuthStatus(t *testing.T) {
+	store := newTestStore(t)
+	auth := mustSSHAuth(t)
+	server := httptest.NewServer(NewHTTPHandler(store, auth, "/"))
+	defer server.Close()
+
+	dir := t.TempDir()
+	identityPath := filepath.Join(dir, "id_ed25519")
+	credentialsPath := filepath.Join(dir, "credentials.json")
+	if err := os.WriteFile(identityPath, []byte(testPrivateKey), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	out, errOut, code := runCLI(t, "--credentials", credentialsPath, "login", "--server", server.URL, "--identity", identityPath)
+	if code != 0 {
+		t.Fatalf("login failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "logged in") {
+		t.Fatalf("unexpected login output: %s", out)
+	}
+
+	if out := mustRemoteOK(t, server.URL, "--credentials", credentialsPath, "entity", "add", "SSH Login", "--type", "person"); !strings.Contains(out, "entity") {
+		t.Fatalf("remote add after login output: %s", out)
+	}
+
+	out, errOut, code = runCLI(t, "--server", server.URL, "--credentials", credentialsPath, "auth", "status")
+	if code != 0 {
+		t.Fatalf("auth status failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "logged in") {
+		t.Fatalf("unexpected auth status output: %s", out)
+	}
+
+	out, errOut, code = runCLI(t, "--server", server.URL, "--credentials", credentialsPath, "logout")
+	if code != 0 {
+		t.Fatalf("logout failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "logged out") {
+		t.Fatalf("unexpected logout output: %s", out)
+	}
+	out, errOut, code = runCLI(t, "--server", server.URL, "--credentials", credentialsPath, "auth", "status")
+	if code != 0 {
+		t.Fatalf("post logout auth status failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "not logged in") {
+		t.Fatalf("unexpected auth status output after logout: %s", out)
 	}
 }
 
@@ -280,6 +344,19 @@ func newTestStore(t *testing.T) *SQLiteStore {
 		t.Fatal(err)
 	}
 	return store
+}
+
+func mustSSHAuth(t *testing.T) *serverAuth {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "authorized_keys")
+	if err := os.WriteFile(path, []byte(testAuthorizedKey), 0600); err != nil {
+		t.Fatal(err)
+	}
+	auth, err := newServerAuth(ServerAuthConfig{AuthorizedKeysPath: path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return auth
 }
 
 func apiDo[T any](t *testing.T, base, token, method, path string, body interface{}) T {

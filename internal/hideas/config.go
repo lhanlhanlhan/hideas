@@ -8,20 +8,31 @@ import (
 )
 
 type Config struct {
-	DB     string
-	Server string
-	Token  string
+	DB              string
+	Server          string
+	Token           string
+	Identity        string
+	CredentialsPath string
+	AuthorizedKeys  string
+}
+
+func defaultHideasDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return ""
+	}
+	return filepath.Join(home, ".hideas")
 }
 
 func defaultConfigPath() string {
 	if v := os.Getenv("HIDEAS_CONFIG"); v != "" {
 		return v
 	}
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
+	dir := defaultHideasDir()
+	if dir == "" {
 		return ""
 	}
-	return filepath.Join(home, ".hideas", "config")
+	return filepath.Join(dir, "config")
 }
 
 func loadConfig(path string) (Config, error) {
@@ -60,6 +71,12 @@ func loadConfig(path string) (Config, error) {
 			cfg.Server = value
 		case "token":
 			cfg.Token = value
+		case "identity":
+			cfg.Identity = value
+		case "credentials":
+			cfg.CredentialsPath = value
+		case "authorized_keys":
+			cfg.AuthorizedKeys = value
 		}
 	}
 	return cfg, scanner.Err()

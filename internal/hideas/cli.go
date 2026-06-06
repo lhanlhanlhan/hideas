@@ -13,6 +13,15 @@ import (
 	"time"
 )
 
+type GlobalSettings struct {
+	DB              string
+	Server          string
+	Token           string
+	Identity        string
+	CredentialsPath string
+	AuthorizedKeys  string
+}
+
 func Run(args []string, stdout, stderr io.Writer) int {
 	if err := run(args, stdout, stderr); err != nil {
 		fmt.Fprintln(stderr, "error:", err)
@@ -28,6 +37,8 @@ func run(args []string, stdout, stderr io.Writer) error {
 	serverURL := global.String("server", "", "hideas server URL")
 	configPath := global.String("config", "", "config file path")
 	token := global.String("token", "", "HTTP bearer token")
+	identity := global.String("identity", "", "SSH private key path for login")
+	credentialsPath := global.String("credentials", "", "credentials file path")
 	if err := global.Parse(args); err != nil {
 		return err
 	}
@@ -35,7 +46,10 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	resolvedDB, resolvedServer, resolvedToken := resolveGlobalConfig(*dbPath, *serverURL, *token, cfg)
+	settings, err := resolveGlobalConfig(*dbPath, *serverURL, *token, *identity, *credentialsPath, cfg)
+	if err != nil {
+		return err
+	}
 	rest := global.Args()
 	if len(rest) == 0 {
 		return errors.New("command is required")
@@ -44,10 +58,19 @@ func run(args []string, stdout, stderr io.Writer) error {
 	cmdArgs := rest[1:]
 
 	if cmd == "serve" {
-		return runServe(cmdArgs, resolvedDB, resolvedToken, stdout, stderr)
+		return runServe(cmdArgs, settings, stdout, stderr)
+	}
+	if cmd == "login" {
+		return cmdLogin(cmdArgs, settings, stdout, stderr)
+	}
+	if cmd == "logout" {
+		return cmdLogout(cmdArgs, settings, stdout, stderr)
+	}
+	if cmd == "auth" {
+		return cmdAuth(cmdArgs, settings, stdout, stderr)
 	}
 
-	store, err := openStore(resolvedDB, resolvedServer, resolvedToken)
+	store, err := openStore(settings)
 	if err != nil {
 		return err
 	}
@@ -83,49 +106,80 @@ func run(args []string, stdout, stderr io.Writer) error {
 	return nil
 }
 
-func resolveGlobalConfig(cliDB, cliServer, cliToken string, cfg Config) (string, string, string) {
-	db := cfg.DB
-	server := cfg.Server
-	token := cfg.Token
+func resolveGlobalConfig(cliDB, cliServer, cliToken, cliIdentity, cliCredentials string, cfg Config) (GlobalSettings, error) {
+	settings := GlobalSettings{
+		DB:              cfg.DB,
+		Server:          cfg.Server,
+		Token:           cfg.Token,
+		Identity:        cfg.Identity,
+		CredentialsPath: cfg.CredentialsPath,
+		AuthorizedKeys:  cfg.AuthorizedKeys,
+	}
 	if v := os.Getenv("HIDEAS_DB"); v != "" {
-		db = v
+		settings.DB = v
 	}
 	if v := os.Getenv("HIDEAS_SERVER"); v != "" {
-		server = v
+		settings.Server = v
 	}
 	if v := os.Getenv("HIDEAS_TOKEN"); v != "" {
-		token = v
+		settings.Token = v
+	}
+	if v := os.Getenv("HIDEAS_IDENTITY"); v != "" {
+		settings.Identity = v
+	}
+	if v := os.Getenv("HIDEAS_CREDENTIALS"); v != "" {
+		settings.CredentialsPath = v
+	}
+	if v := os.Getenv("HIDEAS_AUTHORIZED_KEYS"); v != "" {
+		settings.AuthorizedKeys = v
 	}
 	if cliDB != "" {
-		db = cliDB
+		settings.DB = cliDB
 	}
 	if cliServer != "" {
-		server = cliServer
+		settings.Server = cliServer
 	}
 	if cliToken != "" {
-		token = cliToken
+		settings.Token = cliToken
 	}
-	return db, server, token
+	if cliIdentity != "" {
+		settings.Identity = cliIdentity
+	}
+	if cliCredentials != "" {
+		settings.CredentialsPath = cliCredentials
+	}
+	if settings.CredentialsPath == "" {
+		settings.CredentialsPath = defaultCredentialsPath()
+	}
+	if settings.Server != "" && settings.Token == "" {
+		if entry, ok, err := credentialForServer(settings.CredentialsPath, settings.Server); err != nil {
+			return GlobalSettings{}, err
+		} else if ok {
+			settings.Token = entry.Token
+		}
+	}
+	return settings, nil
 }
 
-func openStore(dbPath, serverURL, token string) (Store, error) {
-	if serverURL != "" {
-		return NewHTTPStore(serverURL, token), nil
+func openStore(settings GlobalSettings) (Store, error) {
+	if settings.Server != "" {
+		return NewHTTPStore(settings.Server, settings.Token), nil
 	}
-	if dbPath == "" {
-		dbPath = defaultDBPath()
+	if settings.DB == "" {
+		settings.DB = defaultDBPath()
 	}
-	return OpenSQLite(dbPath)
+	return OpenSQLite(settings.DB)
 }
 
-func runServe(args []string, globalDB, token string, stdout, stderr io.Writer) error {
+func runServe(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	dbPath := fs.String("db", globalDB, "SQLite database path")
+	dbPath := fs.String("db", settings.DB, "SQLite database path")
 	host := fs.String("host", "127.0.0.1", "listen host")
 	port := fs.Int("port", 8765, "listen port")
 	basePath := fs.String("base-path", "/", "HTTP base path")
-	localToken := fs.String("token", token, "HTTP bearer token")
+	localToken := fs.String("token", settings.Token, "HTTP bearer token")
+	authorizedKeys := fs.String("authorized-keys", settings.AuthorizedKeys, "authorized SSH public keys file")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -142,7 +196,102 @@ func runServe(args []string, globalDB, token string, stdout, stderr io.Writer) e
 	}
 	addr := fmt.Sprintf("%s:%d", *host, *port)
 	fmt.Fprintf(stdout, "serving %s on http://%s%s\n", store.Path(), addr, normalizeBasePath(*basePath))
-	return http.ListenAndServe(addr, NewHTTPHandler(store, *localToken, *basePath))
+	auth, err := newServerAuth(ServerAuthConfig{StaticToken: *localToken, AuthorizedKeysPath: *authorizedKeys})
+	if err != nil {
+		return err
+	}
+	return http.ListenAndServe(addr, NewHTTPHandler(store, auth, *basePath))
+}
+
+func cmdLogin(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("login", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	server := fs.String("server", settings.Server, "hideas server URL")
+	identity := fs.String("identity", settings.Identity, "SSH private key path")
+	credentialsPath := fs.String("credentials", settings.CredentialsPath, "credentials file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*server) == "" {
+		return errors.New("server is required")
+	}
+	if strings.TrimSpace(*identity) == "" {
+		return errors.New("identity is required")
+	}
+	client := NewHTTPStore(*server, "")
+	challenge, err := client.AuthChallenge()
+	if err != nil {
+		return err
+	}
+	publicKey, signature, err := signChallenge(*identity, challenge.Challenge)
+	if err != nil {
+		return err
+	}
+	login, err := client.AuthLogin(challenge.ChallengeID, publicKey, signature)
+	if err != nil {
+		return err
+	}
+	if err := storeCredential(*credentialsPath, *server, CredentialEntry{Token: login.Token, ExpiresAt: login.ExpiresAt}); err != nil {
+		return err
+	}
+	if err := validateCredentialFileMode(*credentialsPath); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "logged in to %s until %s\n", normalizeServerKey(*server), time.UnixMilli(login.ExpiresAt).UTC().Format(time.RFC3339))
+	return nil
+}
+
+func cmdLogout(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
+	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	server := fs.String("server", settings.Server, "hideas server URL")
+	credentialsPath := fs.String("credentials", settings.CredentialsPath, "credentials file path")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if strings.TrimSpace(*server) == "" {
+		return errors.New("server is required")
+	}
+	if err := removeCredential(*credentialsPath, *server); err != nil {
+		return err
+	}
+	fmt.Fprintf(stdout, "logged out from %s\n", normalizeServerKey(*server))
+	return nil
+}
+
+func cmdAuth(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
+	if len(args) == 0 {
+		return errors.New("auth subcommand is required")
+	}
+	switch args[0] {
+	case "status":
+		fs := flag.NewFlagSet("auth status", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		server := fs.String("server", settings.Server, "hideas server URL")
+		credentialsPath := fs.String("credentials", settings.CredentialsPath, "credentials file path")
+		if err := fs.Parse(args[1:]); err != nil {
+			return err
+		}
+		if strings.TrimSpace(*server) == "" {
+			return errors.New("server is required")
+		}
+		entry, ok, err := credentialForServer(*credentialsPath, *server)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			fmt.Fprintf(stdout, "not logged in for %s\n", normalizeServerKey(*server))
+			return nil
+		}
+		store := NewHTTPStore(*server, entry.Token)
+		if _, err := store.Health(); err != nil {
+			return fmt.Errorf("stored token exists but verification failed: %w", err)
+		}
+		fmt.Fprintf(stdout, "logged in for %s until %s\n", normalizeServerKey(*server), time.UnixMilli(entry.ExpiresAt).UTC().Format(time.RFC3339))
+		return nil
+	default:
+		return fmt.Errorf("unknown auth subcommand: %s", args[0])
+	}
 }
 
 func cmdAdd(store Store, args []string, stdout, stderr io.Writer) error {

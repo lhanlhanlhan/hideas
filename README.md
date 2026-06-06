@@ -127,10 +127,16 @@ Mount under a base path:
 hideas serve --base-path /hideas/
 ```
 
-With a token:
+With a static token:
 
 ```bash
 hideas serve --host 0.0.0.0 --token "$HIDEAS_TOKEN"
+```
+
+With SSH login enabled:
+
+```bash
+hideas serve --host 0.0.0.0 --authorized-keys "$HOME/.hideas/authorized_keys"
 ```
 
 ### Remote Client Mode
@@ -145,7 +151,8 @@ Or through config:
 
 ```text
 server = "https://example.com/hideas/"
-token = "optional-token"
+identity = "~/.ssh/id_ed25519"
+credentials = "~/.hideas/credentials.json"
 ```
 
 Default config path:
@@ -153,6 +160,15 @@ Default config path:
 ```text
 $HOME/.hideas/config
 ```
+
+Login once with an SSH private key:
+
+```bash
+hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
+hideas auth status --server https://example.com/hideas/
+```
+
+The issued bearer token is stored in a separate credentials file, not in the config file.
 
 ## HTTP API
 
@@ -186,4 +202,3 @@ See [docs/http-api-v1.md](docs/http-api-v1.md) for the full HTTP API specificati
 ## Status
 
 Hideas is early and currently optimized for personal use.
-

@@ -150,7 +150,9 @@ The v1.0 configuration format is a small key-value file:
 ```text
 db = "/path/to/hideas.sqlite"
 server = "https://example.com/hideas/"
-token = "optional-token"
+identity = "~/.ssh/id_ed25519"
+credentials = "~/.hideas/credentials.json"
+authorized_keys = "~/.hideas/authorized_keys"
 ```
 
 Supported keys:
@@ -159,6 +161,9 @@ Supported keys:
 db
 server
 token
+identity
+credentials
+authorized_keys
 ```
 
 Global configuration precedence:
@@ -213,6 +218,7 @@ hideas serve
 hideas serve --db /path/to/hideas.sqlite
 hideas serve --host 0.0.0.0 --port 8765
 hideas serve --base-path /hideas/
+hideas serve --authorized-keys ~/.hideas/authorized_keys
 ```
 
 Responsibilities:
@@ -221,6 +227,30 @@ Responsibilities:
 - Listen on configured host and port
 - Expose the standard HTTP API
 - Return consistent response envelopes
+
+### login
+
+Authenticate to a remote server with an SSH private key and store the issued token in a credentials file.
+
+```bash
+hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
+```
+
+### auth status
+
+Verify that the current remote server has a stored, working token.
+
+```bash
+hideas auth status --server https://example.com/hideas/
+```
+
+### logout
+
+Remove the stored token for a remote server.
+
+```bash
+hideas logout --server https://example.com/hideas/
+```
 
 ### add
 
@@ -465,13 +495,14 @@ The CLI should map these errors to the same human-readable messages that local m
 
 Authentication is not required for local-only use.
 
-When binding to anything other than `127.0.0.1`, the server should support a token.
+When binding to anything other than `127.0.0.1`, the server should support authentication.
 
 Suggested configuration:
 
 ```bash
 hideas serve --host 0.0.0.0 --token TOKEN
-HIDEAS_TOKEN=TOKEN hideas --server https://example.com/hideas/ search "SQLite"
+hideas serve --host 0.0.0.0 --authorized-keys ~/.hideas/authorized_keys
+hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
 ```
 
 Suggested HTTP header:
@@ -479,6 +510,15 @@ Suggested HTTP header:
 ```http
 Authorization: Bearer TOKEN
 ```
+
+For SSH login, the client should:
+
+1. Request a challenge from the server
+2. Sign the challenge with the configured SSH private key
+3. Exchange the signature for a bearer token
+4. Store the token in a separate credentials file
+
+The credentials file should be outside the config file and created with `0600` permissions.
 
 If the server is exposed over a network, TLS should be handled by a reverse proxy or deployment environment.
 

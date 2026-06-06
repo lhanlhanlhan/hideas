@@ -32,7 +32,12 @@ https://example.com/hideas/api/v1
 
 ## Authentication
 
-If the server is started with a token:
+Hideas supports two authentication modes for remote access:
+
+1. Static bearer token
+2. SSH challenge login that issues a short-lived bearer token
+
+If the server is started with a static token:
 
 ```bash
 hideas serve --token TOKEN
@@ -44,7 +49,24 @@ clients must send:
 Authorization: Bearer TOKEN
 ```
 
-If no token is configured, authentication is not required.
+If the server is started with authorized SSH public keys:
+
+```bash
+hideas serve --authorized-keys /path/to/authorized_keys
+```
+
+clients may obtain a bearer token through:
+
+1. `POST /auth/challenge`
+2. `POST /auth/login`
+
+and then use:
+
+```http
+Authorization: Bearer TOKEN
+```
+
+If no token or authorized key file is configured, authentication is not required.
 
 ## Content Type
 
@@ -218,6 +240,53 @@ Example:
 
 ```bash
 curl -fsSL https://example.com/hideas/api/v1/health
+```
+
+## Authentication Endpoints
+
+### POST /auth/challenge
+
+Issues a one-time challenge for SSH login.
+
+Request:
+
+```json
+{
+  "client": "hideas-cli"
+}
+```
+
+Response data:
+
+```json
+{
+  "challenge_id": "7QF2xS2Wm9c9JY6R1G6d3s8r8Q6N4Y7A",
+  "challenge": "1Yw4XgM4z3+f3P6jv5c+f6k7x7n0y+v8q8nL2jR5z3s=",
+  "expires_at": 1710000000000
+}
+```
+
+### POST /auth/login
+
+Verifies an SSH signature over the challenge and issues a bearer token.
+
+Request:
+
+```json
+{
+  "challenge_id": "7QF2xS2Wm9c9JY6R1G6d3s8r8Q6N4Y7A",
+  "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...",
+  "signature": "BASE64_SSH_SIGNATURE"
+}
+```
+
+Response data:
+
+```json
+{
+  "token": "eyJhbGciOi...",
+  "expires_at": 1710000000000
+}
 ```
 
 ## Traces
@@ -603,4 +672,3 @@ Clients should:
 - Support `ambiguous_entity` by asking the user to choose an entity ID.
 - Preserve unknown fields in responses where possible.
 - Send UTC epoch milliseconds for time fields.
-
