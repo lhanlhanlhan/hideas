@@ -113,6 +113,14 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	if !strings.Contains(untilOut, strconvFormat(timeFilteredID)) {
 		t.Fatalf("date-based until search should include today's trace: %s", untilOut)
 	}
+	recentOut := mustOK(t, db, "search", "DateFilterTarget", "--recent", "1h", "--format", "json")
+	if !strings.Contains(recentOut, strconvFormat(timeFilteredID)) {
+		t.Fatalf("recent window search should include today's trace: %s", recentOut)
+	}
+	out, errOut, code = runCLI(t, "--mode", "local", "--db", db, "search", "DateFilterTarget", "--recent", "24")
+	if code == 0 || !strings.Contains(errOut, "invalid recent window") {
+		t.Fatalf("expected invalid recent window failure, code=%d stdout=%s stderr=%s", code, out, errOut)
+	}
 	searchOut := mustOK(t, db, "search", "TruncateTest", "--limit", "1")
 	longContent := "TruncateTest " + strings.Repeat("abcdef", 20)
 	expectedSummary := summarizeText(longContent, 100)

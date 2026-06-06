@@ -336,9 +336,12 @@ Options:
 --type TYPE
 --since TIMESTAMP_OR_DATE
 --until TIMESTAMP_OR_DATE
+--recent DURATION
 --limit N
 --format text|json
 ```
+
+`--recent` is a CLI shortcut that expands to a time window ending at now. Supported units are `h`, `w`, and `y`, and the numeric part must be an integer. Example: `--recent 24h`.
 
 First version search should support:
 

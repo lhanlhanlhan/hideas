@@ -51,6 +51,8 @@ Prefer the smallest useful operation:
 8. In remote mode, check `hideas auth status --server URL` before assuming the client is authenticated.
 9. If not authenticated, use `hideas login --server URL --identity /path/to/key`.
 
+For quick windowed retrieval, use `hideas search --recent DURATION` in the CLI, for example `--recent 24h`. This is a client-side shortcut only; it expands to `since` and `until` before the search is executed. Supported units are `h`, `w`, and `y`, with integer counts only.
+
 Do not over-model. Only create an Entity when it is likely to be searched, linked, or summarized again.
 
 ## CLI-Only Usage

@@ -36,10 +36,13 @@ Search:
 hideas search "SQLite"
 hideas search "SQLite" --entity-id 42
 hideas search --type thought --since 1710000000000
+hideas search "SQLite" --recent 24h
 hideas search "SQLite" --format json
 ```
 
 Search output in text mode should show concise summaries, not full trace bodies. Search responses include `traces_has_more` and `entities_has_more` so clients can tell when the result set was truncated by `--limit`.
+
+`--recent` is a CLI shortcut that expands to a time window ending at now. Supported units are `h`, `w`, and `y`, and the numeric part must be an integer, for example `24h`, `2w`, or `1y`. Do not combine `--recent` with `--since` or `--until`.
 
 Version:
 

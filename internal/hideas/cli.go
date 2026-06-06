@@ -238,7 +238,7 @@ func writeCommandHelp(w io.Writer, args []string) {
 	case "add":
 		fmt.Fprint(w, "Usage: hideas add CONTENT [--type TYPE] [--at TIME] [--entity NAME] [--entity-id ID]\n")
 	case "search":
-		fmt.Fprint(w, "Usage: hideas search [QUERY] [--entity NAME] [--entity-id ID] [--type TYPE] [--since TIME] [--until TIME] [--limit N] [--format text|json]\n")
+		fmt.Fprint(w, "Usage: hideas search [QUERY] [--entity NAME] [--entity-id ID] [--type TYPE] [--since TIME] [--until TIME] [--recent DURATION] [--limit N] [--format text|json]\n")
 	case "show":
 		fmt.Fprint(w, "Usage: hideas show entity|trace|relation ID\n")
 	case "delete":
@@ -614,6 +614,7 @@ func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 	typeName := fs.String("type", "", "trace type")
 	sinceStr := fs.String("since", "", "since")
 	untilStr := fs.String("until", "", "until")
+	recentStr := fs.String("recent", "", "recent window, e.g. 24h")
 	limit := fs.Int("limit", 20, "limit")
 	format := fs.String("format", "text", "text|json")
 	pos, err := parseInterspersed(fs, args)
@@ -623,6 +624,9 @@ func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
+	if strings.TrimSpace(*recentStr) != "" && (strings.TrimSpace(*sinceStr) != "" || strings.TrimSpace(*untilStr) != "") {
+		return errors.New("--recent cannot be combined with --since or --until")
+	}
 	since, err := parseOptionalSearchTime(*sinceStr, false)
 	if err != nil {
 		return err
@@ -630,6 +634,12 @@ func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 	until, err := parseOptionalSearchTime(*untilStr, true)
 	if err != nil {
 		return err
+	}
+	if strings.TrimSpace(*recentStr) != "" {
+		since, until, err = parseRecentWindow(*recentStr)
+		if err != nil {
+			return err
+		}
 	}
 	in := SearchInput{Query: strings.Join(pos, " "), EntityName: *entity, TypeName: *typeName, Since: since, Until: until, Limit: *limit}
 	if *entityID != 0 {
@@ -995,6 +1005,37 @@ func parseOptionalSearchTime(v string, upperBound bool) (*int64, error) {
 
 func parseOptionalTime(v string) (*int64, error) {
 	return parseOptionalSearchTime(v, false)
+}
+
+func parseRecentWindow(v string) (*int64, *int64, error) {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return nil, nil, nil
+	}
+	if len(v) < 2 {
+		return nil, nil, fmt.Errorf("invalid recent window: %s", v)
+	}
+	unit := v[len(v)-1]
+	if unit != 'h' && unit != 'w' && unit != 'y' {
+		return nil, nil, fmt.Errorf("invalid recent window: %s", v)
+	}
+	n, err := strconv.ParseInt(strings.TrimSpace(v[:len(v)-1]), 10, 64)
+	if err != nil || n <= 0 {
+		return nil, nil, fmt.Errorf("invalid recent window: %s", v)
+	}
+	now := time.Now().UTC()
+	var d time.Duration
+	switch unit {
+	case 'h':
+		d = time.Duration(n) * time.Hour
+	case 'w':
+		d = time.Duration(n) * 7 * 24 * time.Hour
+	case 'y':
+		d = time.Duration(n) * 365 * 24 * time.Hour
+	}
+	since := now.Add(-d).UnixMilli()
+	until := now.UnixMilli()
+	return &since, &until, nil
 }
 
 func writeJSON(w io.Writer, v interface{}) error {
