@@ -99,6 +99,24 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	if out := mustOK(t, db, "search", "SQLite", "--entity-id", strconvFormat(e1), "--type", "thought", "--format", "json"); !strings.Contains(out, "SQLite") {
 		t.Fatalf("search json output: %s", out)
 	}
+	if out := mustOK(t, db, "add", "TruncateTest short", "--type", "thought"); !strings.Contains(out, "trace") {
+		t.Fatalf("short trace add output: %s", out)
+	}
+	if out := mustOK(t, db, "add", "TruncateTest "+strings.Repeat("abcdef", 20), "--type", "thought"); !strings.Contains(out, "trace") {
+		t.Fatalf("long trace add output: %s", out)
+	}
+	searchOut := mustOK(t, db, "search", "TruncateTest", "--limit", "1")
+	longContent := "TruncateTest " + strings.Repeat("abcdef", 20)
+	expectedSummary := summarizeText(longContent, 100)
+	if strings.Contains(searchOut, longContent) {
+		t.Fatalf("search output should not include full content: %s", searchOut)
+	}
+	if !strings.Contains(searchOut, expectedSummary) {
+		t.Fatalf("search output should include summary: %s", searchOut)
+	}
+	if !strings.Contains(searchOut, "more results available") {
+		t.Fatalf("search output should indicate truncation: %s", searchOut)
+	}
 	if out := mustOK(t, db, "show", "trace", strconvFormat(traceID)); !strings.Contains(out, "entity "+strconvFormat(e1)) {
 		t.Fatalf("show trace output: %s", out)
 	}
@@ -191,8 +209,9 @@ func TestServerModeHTTPAPI(t *testing.T) {
 
 	e := apiDo[Entity](t, server.URL, "secret", http.MethodPost, "/hideas/api/v1/entities", map[string]string{"Name": "Alice", "Type": "person"})
 	tr := apiDo[Trace](t, server.URL, "secret", http.MethodPost, "/hideas/api/v1/traces", AddTraceInput{Content: "Alice mentioned SQLite", TypeName: "event", EntityIDs: []int64{e.ID}})
-	search := apiDo[SearchResult](t, server.URL, "secret", http.MethodGet, "/hideas/api/v1/search?q=SQLite", nil)
-	if len(search.Traces) != 1 || search.Traces[0].ID != tr.ID {
+	tr2 := apiDo[Trace](t, server.URL, "secret", http.MethodPost, "/hideas/api/v1/traces", AddTraceInput{Content: "Alice mentioned SQLite again", TypeName: "event", EntityIDs: []int64{e.ID}})
+	search := apiDo[SearchResult](t, server.URL, "secret", http.MethodGet, "/hideas/api/v1/search?q=SQLite&limit=1", nil)
+	if len(search.Traces) != 1 || search.Traces[0].ID != tr2.ID || !search.TracesHasMore {
 		t.Fatalf("search response: %+v", search)
 	}
 	profile := apiDo[Trace](t, server.URL, "secret", http.MethodPut, "/hideas/api/v1/profiles/"+strconvFormat(e.ID), map[string]string{"Content": "Alice profile"})
@@ -320,11 +339,12 @@ func TestRemoteCLILoginAndAuthStatus(t *testing.T) {
 	dir := t.TempDir()
 	identityPath := filepath.Join(dir, "id_ed25519")
 	credentialsPath := filepath.Join(dir, "credentials.json")
+	configPath := filepath.Join(dir, "config")
 	if err := os.WriteFile(identityPath, []byte(testPrivateKey), 0600); err != nil {
 		t.Fatal(err)
 	}
 
-	out, errOut, code := runCLI(t, "--credentials", credentialsPath, "login", "--server", server.URL, "--identity", identityPath)
+	out, errOut, code := runCLI(t, "--config", configPath, "--credentials", credentialsPath, "login", "--server", server.URL, "--identity", identityPath)
 	if code != 0 {
 		t.Fatalf("login failed stdout=%s stderr=%s", out, errOut)
 	}
@@ -332,11 +352,19 @@ func TestRemoteCLILoginAndAuthStatus(t *testing.T) {
 		t.Fatalf("unexpected login output: %s", out)
 	}
 
-	if out := mustRemoteOK(t, server.URL, "--credentials", credentialsPath, "entity", "add", "SSH Login", "--type", "person"); !strings.Contains(out, "entity") {
-		t.Fatalf("remote add after login output: %s", out)
+	out, errOut, code = runCLI(t, "--config", configPath, "status")
+	if code != 0 {
+		t.Fatalf("status failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(out, "mode: remote-client") || !strings.Contains(out, "server prefix: "+normalizeServerKey(server.URL)) || !strings.Contains(out, "login: logged in") {
+		t.Fatalf("unexpected status output: %s", out)
 	}
 
-	out, errOut, code = runCLI(t, "--server", server.URL, "--credentials", credentialsPath, "auth", "status")
+	if out, errOut, code = runCLI(t, "--config", configPath, "entity", "add", "SSH Login", "--type", "person"); code != 0 || !strings.Contains(out, "entity") {
+		t.Fatalf("remote add after login failed stdout=%s stderr=%s code=%d", out, errOut, code)
+	}
+
+	out, errOut, code = runCLI(t, "--config", configPath, "auth", "status")
 	if code != 0 {
 		t.Fatalf("auth status failed stdout=%s stderr=%s", out, errOut)
 	}
@@ -344,19 +372,49 @@ func TestRemoteCLILoginAndAuthStatus(t *testing.T) {
 		t.Fatalf("unexpected auth status output: %s", out)
 	}
 
-	out, errOut, code = runCLI(t, "--server", server.URL, "--credentials", credentialsPath, "logout")
+	out, errOut, code = runCLI(t, "--config", configPath, "logout")
 	if code != 0 {
 		t.Fatalf("logout failed stdout=%s stderr=%s", out, errOut)
 	}
 	if !strings.Contains(out, "logged out") {
 		t.Fatalf("unexpected logout output: %s", out)
 	}
-	out, errOut, code = runCLI(t, "--server", server.URL, "--credentials", credentialsPath, "auth", "status")
+
+	out, errOut, code = runCLI(t, "--config", configPath, "status")
 	if code != 0 {
-		t.Fatalf("post logout auth status failed stdout=%s stderr=%s", out, errOut)
+		t.Fatalf("status after logout failed stdout=%s stderr=%s", out, errOut)
 	}
-	if !strings.Contains(out, "not logged in") {
-		t.Fatalf("unexpected auth status output after logout: %s", out)
+	if !strings.Contains(out, "mode: local") || !strings.Contains(out, "server prefix: (none)") || !strings.Contains(out, "login: not logged in") {
+		t.Fatalf("unexpected status output after logout: %s", out)
+	}
+
+	dbPath := filepath.Join(dir, "local.sqlite")
+	if out, errOut, code = runCLI(t, "--config", configPath, "--credentials", credentialsPath, "--db", dbPath, "init"); code != 0 {
+		t.Fatalf("init after logout failed stdout=%s stderr=%s", out, errOut)
+	}
+	if out, errOut, code = runCLI(t, "--config", configPath, "--credentials", credentialsPath, "--db", dbPath, "entity", "add", "SSH Login", "--type", "person"); code != 0 || !strings.Contains(out, "entity") {
+		t.Fatalf("local add after logout failed stdout=%s stderr=%s code=%d", out, errOut, code)
+	}
+}
+
+func TestRemoteCLIUsesDefaultModeConfig(t *testing.T) {
+	store := newTestStore(t)
+	server := httptest.NewServer(NewHTTPHandler(store, nil, "/"))
+	defer server.Close()
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	if err := os.WriteFile(configPath, []byte("mode = \"remote-client\"\nserver = \""+server.URL+"\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	if out, errOut, code := runCLI(t, "--config", configPath, "entity", "add", "Config Remote", "--type", "source"); code != 0 {
+		t.Fatalf("remote command with default mode config failed stdout=%s stderr=%s", out, errOut)
+	}
+	if out, errOut, code := runCLI(t, "--config", configPath, "status"); code != 0 {
+		t.Fatalf("status with default mode config failed stdout=%s stderr=%s", out, errOut)
+	} else if !strings.Contains(out, "mode: remote-client") || !strings.Contains(out, "server prefix: "+normalizeServerKey(server.URL)) {
+		t.Fatalf("unexpected status with default mode config: %s", out)
 	}
 }
 

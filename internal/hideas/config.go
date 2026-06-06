@@ -2,12 +2,19 @@ package hideas
 
 import (
 	"bufio"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 )
 
+const (
+	ModeLocal        = "local"
+	ModeRemoteClient = "remote-client"
+)
+
 type Config struct {
+	Mode            string
 	DB              string
 	Server          string
 	Token           string
@@ -65,6 +72,8 @@ func loadConfig(path string) (Config, error) {
 		key = strings.TrimSpace(key)
 		value = strings.Trim(strings.TrimSpace(value), `"'`)
 		switch key {
+		case "mode":
+			cfg.Mode = value
 		case "db":
 			cfg.DB = value
 		case "server":
@@ -80,4 +89,43 @@ func loadConfig(path string) (Config, error) {
 		}
 	}
 	return cfg, scanner.Err()
+}
+
+func saveConfig(path string, cfg Config) error {
+	if path == "" {
+		path = defaultConfigPath()
+	}
+	if path == "" {
+		return fmt.Errorf("config path is not available")
+	}
+	if cfg.Mode == ModeLocal {
+		cfg.Mode = ""
+	}
+	dir := filepath.Dir(path)
+	if dir != "." && dir != "" {
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			return err
+		}
+		if err := os.Chmod(dir, 0700); err != nil && !os.IsPermission(err) {
+			return err
+		}
+	}
+	var b strings.Builder
+	writeConfigLine := func(key, value string) {
+		if value == "" {
+			return
+		}
+		fmt.Fprintf(&b, "%s = %q\n", key, value)
+	}
+	writeConfigLine("mode", cfg.Mode)
+	writeConfigLine("db", cfg.DB)
+	writeConfigLine("server", cfg.Server)
+	writeConfigLine("token", cfg.Token)
+	writeConfigLine("identity", cfg.Identity)
+	writeConfigLine("credentials", cfg.CredentialsPath)
+	writeConfigLine("authorized_keys", cfg.AuthorizedKeys)
+	if err := os.WriteFile(path, []byte(b.String()), 0600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0600)
 }

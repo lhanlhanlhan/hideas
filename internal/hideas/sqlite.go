@@ -470,8 +470,8 @@ func (s *SQLiteStore) GetRelation(id int64) (Relation, error) {
 }
 
 func (s *SQLiteStore) Search(in SearchInput) (SearchResult, error) {
-	if in.Limit <= 0 {
-		in.Limit = 20
+	if in.Limit < 0 {
+		in.Limit = 0
 	}
 	var entityID *int64
 	if in.EntityID != nil {
@@ -520,7 +520,7 @@ func (s *SQLiteStore) Search(in SearchInput) (SearchResult, error) {
 		q += ` WHERE ` + strings.Join(where, ` AND `)
 	}
 	q += ` ORDER BY COALESCE(tr.happened_at, tr.created_at) DESC, tr.id DESC LIMIT ?`
-	args = append(args, in.Limit)
+	args = append(args, in.Limit+1)
 	rows, err := s.db.Query(q, args...)
 	if err != nil {
 		return SearchResult{}, err
@@ -537,31 +537,43 @@ func (s *SQLiteStore) Search(in SearchInput) (SearchResult, error) {
 	if err := rows.Err(); err != nil {
 		return SearchResult{}, err
 	}
+	if len(res.Traces) > in.Limit {
+		res.TracesHasMore = true
+		res.Traces = res.Traces[:in.Limit]
+	}
 	if in.Query != "" {
-		es, err := s.searchEntities(in.Query, in.Limit)
+		es, more, err := s.searchEntities(in.Query, in.Limit)
 		if err != nil {
 			return SearchResult{}, err
 		}
 		res.Entities = es
+		res.EntitiesHasMore = more
 	}
 	return res, nil
 }
 
-func (s *SQLiteStore) searchEntities(query string, limit int) ([]Entity, error) {
-	rows, err := s.db.Query(entitySelect+` WHERE e.name LIKE ? ORDER BY e.id LIMIT ?`, "%"+query+"%", limit)
+func (s *SQLiteStore) searchEntities(query string, limit int) ([]Entity, bool, error) {
+	rows, err := s.db.Query(entitySelect+` WHERE e.name LIKE ? ORDER BY e.id LIMIT ?`, "%"+query+"%", limit+1)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	defer rows.Close()
 	var out []Entity
 	for rows.Next() {
 		e, err := scanEntity(rows)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 		out = append(out, e)
 	}
-	return out, rows.Err()
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	more := len(out) > limit
+	if more {
+		out = out[:limit]
+	}
+	return out, more, nil
 }
 
 func (s *SQLiteStore) Show(kind string, id int64) (ShowResult, error) {

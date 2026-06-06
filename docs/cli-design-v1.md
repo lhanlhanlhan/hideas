@@ -116,8 +116,16 @@ HIDEAS_SERVER=https://example.com/hideas/ hideas search "SQLite"
 Or through a configuration file:
 
 ```text
+mode = "remote-client"
 server = "https://example.com/hideas/"
 ```
+
+Effective mode resolution:
+
+1. `--mode`
+2. `HIDEAS_MODE`
+3. `mode` in the configuration file
+4. Built-in default `local`
 
 Resolution order:
 
@@ -126,7 +134,7 @@ Resolution order:
 3. `server` in the configuration file
 4. Local mode
 
-When `--server` or `HIDEAS_SERVER` is present, the CLI should not open the local SQLite database. It should call the remote HTTP API instead.
+When the effective mode is `remote-client`, the CLI should not open the local SQLite database. It should call the remote HTTP API instead.
 
 All command output should remain consistent with local mode.
 
@@ -148,6 +156,7 @@ Missing configuration files should be ignored.
 The v1.0 configuration format is a small key-value file:
 
 ```text
+mode = "remote-client"
 db = "/path/to/hideas.sqlite"
 server = "https://example.com/hideas/"
 identity = "~/.ssh/id_ed25519"
@@ -158,6 +167,7 @@ authorized_keys = "~/.hideas/authorized_keys"
 Supported keys:
 
 ```text
+mode
 db
 server
 token
@@ -240,9 +250,17 @@ Responsibilities:
 - Expose the standard HTTP API
 - Return consistent response envelopes
 
+### status
+
+Show the current operating mode, configured remote server prefix, and login state.
+
+```bash
+hideas status
+```
+
 ### login
 
-Authenticate to a remote server with an SSH private key and store the issued token in a credentials file.
+Authenticate to a remote server with an SSH private key, store the issued token in a credentials file, and switch the default mode to remote client mode.
 
 ```bash
 hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
@@ -258,7 +276,7 @@ hideas auth status --server https://example.com/hideas/
 
 ### logout
 
-Remove the stored token for a remote server.
+Remove the stored token for a remote server. If that server is the configured default server, the default mode returns to local mode.
 
 ```bash
 hideas logout --server https://example.com/hideas/
@@ -315,6 +333,8 @@ First version search should support:
 - Type filtering
 - Time filtering
 - Full-text search when FTS is available
+- Result limiting with a `has_more` signal when more matches exist than the requested limit
+- Summary output in text mode instead of full trace bodies
 
 ### show
 

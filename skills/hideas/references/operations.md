@@ -39,6 +39,8 @@ hideas search --type thought --since 1710000000000
 hideas search "SQLite" --format json
 ```
 
+Search output in text mode should show concise summaries, not full trace bodies. Search responses include `traces_has_more` and `entities_has_more` so clients can tell when the result set was truncated by `--limit`.
+
 Show context:
 
 ```bash
@@ -122,8 +124,9 @@ hideas logout --server https://example.com/hideas/
 After login succeeds, normal CLI commands can use the remote server directly:
 
 ```bash
-hideas --server https://example.com/hideas/ search "SQLite"
-hideas --server https://example.com/hideas/ add "新的记忆" --type thought
+hideas status
+hideas search "SQLite"
+hideas add "新的记忆" --type thought
 ```
 
 ## Config
@@ -137,6 +140,7 @@ $HOME/.hideas/config
 Supported keys:
 
 ```text
+mode = "remote-client"
 db = "/path/to/hideas.sqlite"
 server = "https://example.com/hideas/"
 identity = "~/.ssh/id_ed25519"
@@ -177,3 +181,7 @@ supports
 contradicts
 related_to
 ```
+
+Prefer `Trace` by default. Create an `Entity` only when the item is likely to recur, be linked, or be summarized again.
+
+When a name is ambiguous, require an explicit entity ID instead of guessing.

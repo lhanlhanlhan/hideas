@@ -401,9 +401,13 @@ Response data:
 ```json
 {
   "traces": [],
-  "entities": []
+  "entities": [],
+  "traces_has_more": false,
+  "entities_has_more": false
 }
 ```
+
+If a collection contains more matches than `limit`, the corresponding `*_has_more` field is `true`.
 
 ## Entities
 

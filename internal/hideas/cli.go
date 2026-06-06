@@ -14,6 +14,8 @@ import (
 )
 
 type GlobalSettings struct {
+	ConfigPath      string
+	Mode            string
 	DB              string
 	Server          string
 	Token           string
@@ -36,6 +38,7 @@ func run(args []string, stdout, stderr io.Writer) error {
 	global.Usage = func() {
 		writeRootHelp(stderr)
 	}
+	mode := global.String("mode", "", "default operating mode (local|remote-client)")
 	dbPath := global.String("db", "", "SQLite database path")
 	serverURL := global.String("server", "", "hideas server URL")
 	configPath := global.String("config", "", "config file path")
@@ -48,11 +51,15 @@ func run(args []string, stdout, stderr io.Writer) error {
 		}
 		return err
 	}
-	cfg, err := loadConfig(*configPath)
+	resolvedConfigPath := *configPath
+	if resolvedConfigPath == "" {
+		resolvedConfigPath = defaultConfigPath()
+	}
+	cfg, err := loadConfig(resolvedConfigPath)
 	if err != nil {
 		return err
 	}
-	settings, err := resolveGlobalConfig(*dbPath, *serverURL, *token, *identity, *credentialsPath, cfg)
+	settings, err := resolveGlobalConfig(resolvedConfigPath, *dbPath, *mode, *serverURL, *token, *identity, *credentialsPath, cfg)
 	if err != nil {
 		return err
 	}
@@ -83,6 +90,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 	}
 	if cmd == "auth" {
 		return cmdAuth(cmdArgs, settings, stdout, stderr)
+	}
+	if cmd == "status" {
+		return cmdStatus(settings, stdout)
 	}
 
 	store, err := openStore(settings)
@@ -151,7 +161,8 @@ Usage:
   hideas help [COMMAND]
 
 Core commands:
-  init            Initialize the local database
+ init            Initialize the local database
+  status          Show the current operating mode and remote status
   add             Add a trace
   search          Search traces and entities
   show            Show an entity, trace, or relation by ID
@@ -171,6 +182,7 @@ Remote auth commands:
 
 Global options:
   --db PATH             SQLite database path
+  --mode MODE           Default operating mode (local|remote-client)
   --server URL          Hideas server URL for remote mode
   --config PATH         Config file path
   --token TOKEN         Static HTTP bearer token
@@ -179,6 +191,7 @@ Global options:
 
 Examples:
   hideas init
+  hideas status
   hideas add "Discussed SQLite indexing" --type thought
   hideas search "SQLite" --format json
   hideas entity add "Li Lei" --type person
@@ -196,6 +209,8 @@ func writeCommandHelp(w io.Writer, args []string) {
 	switch args[0] {
 	case "serve":
 		fmt.Fprint(w, "Usage: hideas serve [--db PATH] [--host HOST] [--port PORT] [--base-path PATH] [--token TOKEN] [--authorized-keys PATH]\n")
+	case "status":
+		fmt.Fprint(w, "Usage: hideas status\n")
 	case "login":
 		fmt.Fprint(w, "Usage: hideas login --server URL --identity PATH [--credentials PATH]\n")
 	case "logout":
@@ -228,8 +243,10 @@ func writeCommandHelp(w io.Writer, args []string) {
 	}
 }
 
-func resolveGlobalConfig(cliDB, cliServer, cliToken, cliIdentity, cliCredentials string, cfg Config) (GlobalSettings, error) {
+func resolveGlobalConfig(configPath, cliDB, cliMode, cliServer, cliToken, cliIdentity, cliCredentials string, cfg Config) (GlobalSettings, error) {
 	settings := GlobalSettings{
+		ConfigPath:      configPath,
+		Mode:            cfg.Mode,
 		DB:              cfg.DB,
 		Server:          cfg.Server,
 		Token:           cfg.Token,
@@ -240,8 +257,12 @@ func resolveGlobalConfig(cliDB, cliServer, cliToken, cliIdentity, cliCredentials
 	if v := os.Getenv("HIDEAS_DB"); v != "" {
 		settings.DB = v
 	}
+	if v := os.Getenv("HIDEAS_MODE"); v != "" {
+		settings.Mode = v
+	}
 	if v := os.Getenv("HIDEAS_SERVER"); v != "" {
 		settings.Server = v
+		settings.Mode = ModeRemoteClient
 	}
 	if v := os.Getenv("HIDEAS_TOKEN"); v != "" {
 		settings.Token = v
@@ -258,8 +279,12 @@ func resolveGlobalConfig(cliDB, cliServer, cliToken, cliIdentity, cliCredentials
 	if cliDB != "" {
 		settings.DB = cliDB
 	}
+	if cliMode != "" {
+		settings.Mode = cliMode
+	}
 	if cliServer != "" {
 		settings.Server = cliServer
+		settings.Mode = ModeRemoteClient
 	}
 	if cliToken != "" {
 		settings.Token = cliToken
@@ -270,10 +295,20 @@ func resolveGlobalConfig(cliDB, cliServer, cliToken, cliIdentity, cliCredentials
 	if cliCredentials != "" {
 		settings.CredentialsPath = cliCredentials
 	}
+	if settings.Mode == "" {
+		if settings.Server != "" {
+			settings.Mode = ModeRemoteClient
+		} else {
+			settings.Mode = ModeLocal
+		}
+	}
 	if settings.CredentialsPath == "" {
 		settings.CredentialsPath = defaultCredentialsPath()
 	}
-	if settings.Server != "" && settings.Token == "" {
+	if settings.Mode != ModeLocal && settings.Mode != ModeRemoteClient {
+		return GlobalSettings{}, fmt.Errorf("invalid mode: %s", settings.Mode)
+	}
+	if settings.Mode == ModeRemoteClient && settings.Server != "" && settings.Token == "" {
 		if entry, ok, err := credentialForServer(settings.CredentialsPath, settings.Server); err != nil {
 			return GlobalSettings{}, err
 		} else if ok {
@@ -284,7 +319,10 @@ func resolveGlobalConfig(cliDB, cliServer, cliToken, cliIdentity, cliCredentials
 }
 
 func openStore(settings GlobalSettings) (Store, error) {
-	if settings.Server != "" {
+	if settings.Mode == ModeRemoteClient {
+		if settings.Server == "" {
+			return nil, errors.New("server is required")
+		}
 		return NewHTTPStore(settings.Server, settings.Token), nil
 	}
 	if settings.DB == "" {
@@ -367,6 +405,9 @@ func cmdLogin(args []string, settings GlobalSettings, stdout, stderr io.Writer) 
 	if err := validateCredentialFileMode(*credentialsPath); err != nil {
 		return err
 	}
+	if err := persistRemoteMode(settings.ConfigPath, *server, *credentialsPath); err != nil {
+		return err
+	}
 	fmt.Fprintf(stdout, "logged in to %s until %s\n", normalizeServerKey(*server), time.UnixMilli(login.ExpiresAt).UTC().Format(time.RFC3339))
 	return nil
 }
@@ -389,8 +430,71 @@ func cmdLogout(args []string, settings GlobalSettings, stdout, stderr io.Writer)
 	if err := removeCredential(*credentialsPath, *server); err != nil {
 		return err
 	}
+	if err := clearRemoteMode(settings.ConfigPath, *server); err != nil {
+		return err
+	}
 	fmt.Fprintf(stdout, "logged out from %s\n", normalizeServerKey(*server))
 	return nil
+}
+
+func cmdStatus(settings GlobalSettings, stdout io.Writer) error {
+	server := normalizeServerKey(settings.Server)
+	fmt.Fprintf(stdout, "mode: %s\n", settings.Mode)
+	if server == "" {
+		fmt.Fprintln(stdout, "server prefix: (none)")
+		fmt.Fprintln(stdout, "login: not logged in")
+		return nil
+	}
+	fmt.Fprintf(stdout, "server prefix: %s\n", server)
+	if settings.Token != "" {
+		if entry, ok, err := credentialForServer(settings.CredentialsPath, settings.Server); err == nil && ok {
+			fmt.Fprintf(stdout, "login: logged in until %s\n", time.UnixMilli(entry.ExpiresAt).UTC().Format(time.RFC3339))
+			return nil
+		}
+		fmt.Fprintln(stdout, "login: authenticated with token")
+		return nil
+	}
+	entry, ok, err := credentialForServer(settings.CredentialsPath, settings.Server)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		fmt.Fprintln(stdout, "login: not logged in")
+		return nil
+	}
+	fmt.Fprintf(stdout, "login: logged in until %s\n", time.UnixMilli(entry.ExpiresAt).UTC().Format(time.RFC3339))
+	return nil
+}
+
+func persistRemoteMode(configPath, server, credentialsPath string) error {
+	if strings.TrimSpace(configPath) == "" {
+		return errors.New("config path is not available")
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	cfg.Mode = ModeRemoteClient
+	cfg.Server = normalizeServerKey(server)
+	cfg.Token = ""
+	cfg.CredentialsPath = strings.TrimSpace(credentialsPath)
+	return saveConfig(configPath, cfg)
+}
+
+func clearRemoteMode(configPath, server string) error {
+	if strings.TrimSpace(configPath) == "" {
+		return errors.New("config path is not available")
+	}
+	cfg, err := loadConfig(configPath)
+	if err != nil {
+		return err
+	}
+	if normalizeServerKey(cfg.Server) != normalizeServerKey(server) {
+		return nil
+	}
+	cfg.Mode = ModeLocal
+	cfg.Server = ""
+	return saveConfig(configPath, cfg)
 }
 
 func cmdAuth(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
@@ -506,9 +610,24 @@ func cmdSearch(store Store, args []string, stdout, stderr io.Writer) error {
 		fmt.Fprintf(stdout, "entity %d %s [%s]\n", e.ID, e.Name, e.TypeName)
 	}
 	for _, t := range res.Traces {
-		fmt.Fprintf(stdout, "trace %d [%s] %s\n", t.ID, t.TypeName, t.Content)
+		fmt.Fprintf(stdout, "trace %d [%s] %s\n", t.ID, t.TypeName, summarizeText(t.Content, 100))
+	}
+	if res.EntitiesHasMore || res.TracesHasMore {
+		fmt.Fprintf(stdout, "more results available: traces=%t entities=%t\n", res.TracesHasMore, res.EntitiesHasMore)
 	}
 	return nil
+}
+
+func summarizeText(s string, maxRunes int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if maxRunes <= 0 {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) <= maxRunes {
+		return s
+	}
+	return string(runes[:maxRunes]) + "..."
 }
 
 func cmdShow(store Store, args []string, stdout io.Writer) error {

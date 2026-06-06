@@ -78,6 +78,7 @@ Search:
 
 ```bash
 hideas search "SQLite"
+hideas status
 ```
 
 Show an object:
@@ -166,6 +167,7 @@ hideas --server https://example.com/hideas/ search "SQLite"
 Or through config:
 
 ```text
+mode = "remote-client"
 server = "https://example.com/hideas/"
 identity = "~/.ssh/id_ed25519"
 credentials = "~/.hideas/credentials.json"
@@ -182,9 +184,10 @@ Login once with an SSH private key:
 ```bash
 hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
 hideas auth status --server https://example.com/hideas/
+hideas status
 ```
 
-The issued bearer token is stored in a separate credentials file, not in the config file.
+The issued bearer token is stored in a separate credentials file. The config file stores the default mode, remote server prefix, and credentials path.
 
 ## HTTP API
 

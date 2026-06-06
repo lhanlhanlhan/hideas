@@ -100,8 +100,10 @@ type SearchInput struct {
 }
 
 type SearchResult struct {
-	Traces   []Trace  `json:"traces"`
-	Entities []Entity `json:"entities"`
+	Traces          []Trace  `json:"traces"`
+	Entities        []Entity `json:"entities"`
+	TracesHasMore   bool     `json:"traces_has_more"`
+	EntitiesHasMore bool     `json:"entities_has_more"`
 }
 
 type ShowResult struct {
