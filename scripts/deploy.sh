@@ -5,9 +5,13 @@
 # binding details, renders a TOML config file and a docker-compose.yml, builds
 # the Docker image, and optionally starts the stack with `docker compose up -d`.
 #
-# Usage (run from the repository root):
-#   ./scripts/deploy.sh             # interactive deploy under ./deploy/
-#   ./scripts/deploy.sh /opt/hideas # interactive deploy under /opt/hideas
+# Usage:
+#   ./scripts/deploy.sh <deployment-dir>
+#
+# Examples:
+#   ./scripts/deploy.sh /opt/hideas
+#   ./scripts/deploy.sh /srv/hideas
+#   ./scripts/deploy.sh "$HOME/hideas-server"
 #
 # All generated files are placed under the deployment directory:
 #   <dir>/config            hideas config consumed by `hideas serve`
@@ -19,8 +23,26 @@
 
 set -eu
 
+usage() {
+    cat >&2 <<'EOF'
+Usage: ./scripts/deploy.sh <deployment-dir>
+
+  <deployment-dir> is required. It is where the generated config,
+  docker-compose.yml, and SQLite data volume will live. Pick a location you own
+  and intend to persist, e.g. /opt/hideas, /srv/hideas, or $HOME/hideas-server.
+EOF
+}
+
+if [ "$#" -lt 1 ] || [ -z "$1" ]; then
+    usage
+    exit 2
+fi
+case "$1" in
+    -h|--help) usage; exit 0 ;;
+esac
+
 REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-DEPLOY_DIR=${1:-"${REPO_ROOT}/deploy"}
+DEPLOY_DIR=$1
 IMAGE_NAME=${HIDEAS_IMAGE:-hideas:latest}
 
 prompt() {

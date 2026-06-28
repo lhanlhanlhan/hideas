@@ -54,9 +54,13 @@ The repository ships a `Dockerfile` and an interactive helper for deploying the
 server side via Docker Compose:
 
 ```bash
-./scripts/deploy.sh             # writes to ./deploy/
-./scripts/deploy.sh /opt/hideas # custom deployment directory
+./scripts/deploy.sh /opt/hideas        # or any directory you own
+./scripts/deploy.sh "$HOME/hideas-server"
 ```
+
+The deployment directory argument is required. The script refuses to invent a
+default path under the repository or under `$HOME`. Pick a location you own and
+intend to persist; the script will create it if needed.
 
 The script asks for the public base URL, base path, host/port, SSO issuer,
 SSO `client_id` / `client_secret`, scopes, and whether to generate a static
