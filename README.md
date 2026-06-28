@@ -138,7 +138,7 @@ redirect_url = "https://hideas.example.com/hideas/api/v1/auth/callback"
 # scopes is optional; defaults to "openid profile email".
 ```
 
-`redirect_url` must end with `<base_path>/api/v1/auth/callback`. The server validates this on startup. Register the same URL with your SSO administrator.
+`redirect_url` must end with `/api/v1/auth/callback`. The server validates this on startup. The public prefix may differ from `base_path` (common when a reverse proxy strips a path prefix before forwarding). Register the same URL with your SSO administrator.
 
 ## Client Configuration
 

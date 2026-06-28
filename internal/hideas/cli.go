@@ -409,8 +409,12 @@ func runServe(args []string, configPath string, cfg Config, stdout, stderr io.Wr
 }
 
 // validateServerSSOConfig verifies that, when SSO is configured, the redirect
-// URL ends with the API callback path under the configured base path.
+// URL points at the API callback path. The URL's path only needs to *end* with
+// /api/v1/auth/callback so that the common deployment shape — reverse proxy
+// strips a public prefix (e.g. /hideas/) before forwarding to the container —
+// keeps working without forcing operators to set base_path twice.
 func validateServerSSOConfig(sso SSOConfig, basePath string) error {
+	_ = basePath
 	missing := []string{}
 	if strings.TrimSpace(sso.Issuer) == "" {
 		missing = append(missing, "issuer")
@@ -431,12 +435,12 @@ func validateServerSSOConfig(sso SSOConfig, basePath string) error {
 	if len(missing) > 0 {
 		return fmt.Errorf("incomplete sso configuration: missing %s", strings.Join(missing, ", "))
 	}
-	expectedSuffix := normalizeBasePath(basePath) + "api/v1/auth/callback"
+	const expectedSuffix = "/api/v1/auth/callback"
 	parsed, err := url.Parse(strings.TrimSpace(sso.RedirectURL))
 	if err != nil {
 		return fmt.Errorf("invalid redirect_url: %w", err)
 	}
-	if parsed.Path != expectedSuffix {
+	if !strings.HasSuffix(parsed.Path, expectedSuffix) {
 		return fmt.Errorf("redirect_url path must end with %s (got %s)", expectedSuffix, parsed.Path)
 	}
 	return nil

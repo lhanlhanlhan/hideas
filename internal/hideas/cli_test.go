@@ -680,10 +680,17 @@ func TestValidateServerSSOConfig(t *testing.T) {
 	if err := validateServerSSOConfig(good, "/hideas/"); err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	// The validator does not require base_path to match the redirect URL
+	// prefix, because reverse proxies often strip the public prefix before
+	// forwarding to the container. base_path "/" with a public-prefixed
+	// redirect URL is a legitimate setup.
+	if err := validateServerSSOConfig(good, "/"); err != nil {
+		t.Fatalf("public-prefixed redirect with base_path / should be allowed: %v", err)
+	}
 	bad := good
 	bad.RedirectURL = "https://example.com/wrong"
 	if err := validateServerSSOConfig(bad, "/hideas/"); err == nil {
-		t.Fatal("expected error for mismatched redirect_url path")
+		t.Fatal("expected error for redirect_url that does not end with /api/v1/auth/callback")
 	}
 	if err := validateServerSSOConfig(SSOConfig{}, "/"); err != nil {
 		t.Fatalf("empty config (static-token-only) should be allowed: %v", err)

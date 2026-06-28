@@ -76,7 +76,7 @@ The CLI and the server share a single TOML configuration file (`~/.hideas/config
 - Client-side keys: `server`, `token`, `credentials`.
 - Server-side keys: `db`, `host`, `port`, `base_path`, `token`, and the `[sso]` section (`issuer`, `client_id`, `client_secret`, `redirect_url`, `scopes`).
 - `client_secret` MUST NOT be exposed through CLI flags. `hideas serve` accepts only `--config` and reads everything else from the config file or `HIDEAS_SSO_*` env vars.
-- The server validates `redirect_url` on startup; it must end with `<base_path>/api/v1/auth/callback`.
+- The server validates `redirect_url` on startup; it must end with `/api/v1/auth/callback`. The prefix in front of that suffix may differ from `base_path` (reverse proxies often strip a public prefix).
 
 ## Testing Rules
 

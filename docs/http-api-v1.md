@@ -56,7 +56,7 @@ Subsequent requests use:
 Authorization: Bearer TOKEN
 ```
 
-A configured SSO requires all four fields; partial configuration is rejected on startup. `redirect_url` must end with `<base_path>/api/v1/auth/callback`.
+A configured SSO requires all four fields; partial configuration is rejected on startup. `redirect_url` must end with `/api/v1/auth/callback`. The public prefix in front of that suffix may differ from `base_path` (typical when a reverse proxy strips a path prefix before forwarding to the container).
 
 If neither a static token nor an SSO is configured, authentication is not required (intended for local-only development).
 
