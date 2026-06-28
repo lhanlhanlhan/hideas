@@ -1,6 +1,6 @@
 # Agent Working Rules
 
-This repository is a personal cognitive system named Hideas. It provides a Go CLI, a SQLite-backed local store, a server mode, and a standard HTTP API for clients that do not use the CLI.
+This repository is a personal cognitive system named Hideas. It provides a Go CLI that always operates as a client of a hideas server, a SQLite-backed local store, an HTTP server (`hideas serve`), and a standard HTTP API for clients that do not use the CLI.
 
 Agents working in this repository must keep implementation, tests, and documentation aligned.
 
@@ -23,7 +23,7 @@ This includes:
 
 - Endpoint paths
 - Base path behavior
-- Authentication behavior
+- Authentication behavior (SSO Authorization Code flow and static bearer token)
 - Request JSON shapes
 - Response envelope shape
 - JSON field names
@@ -65,15 +65,18 @@ If a model or schema change is intentional, update all of these in the same chan
 
 ## CLI Rules
 
-The CLI is a thin access layer over the same store operations used by HTTP.
+The CLI is a thin HTTP client. It does not open the local SQLite database. All data commands require a configured `server` and a valid bearer token, either issued through SSO login or supplied as a static token.
 
-Keep these modes aligned:
+The same operation should produce consistent output whether the user is authenticated through SSO or through a static token.
 
-- Local SQLite mode
-- `hideas serve` server mode
-- Remote client mode using `--server`, `HIDEAS_SERVER`, or config
+## Configuration Rules
 
-The same operation should have consistent output semantics across local and remote modes. If a command works locally, the remote mode should either support it or clearly document why it does not.
+The CLI and the server share a single TOML configuration file (`~/.hideas/config` by default).
+
+- Client-side keys: `server`, `token`, `credentials`.
+- Server-side keys: `db`, `host`, `port`, `base_path`, `token`, and the `[sso]` section (`issuer`, `client_id`, `client_secret`, `redirect_url`, `scopes`).
+- `client_secret` MUST NOT be exposed through CLI flags. `hideas serve` accepts only `--config` and reads everything else from the config file or `HIDEAS_SSO_*` env vars.
+- The server validates `redirect_url` on startup; it must end with `<base_path>/api/v1/auth/callback`.
 
 ## Testing Rules
 
@@ -91,12 +94,13 @@ sh -n scripts/install.sh
 
 Tests should cover:
 
-- Local CLI behavior
-- HTTP server behavior
-- Remote client behavior
+- CLI client behavior against an in-memory HTTP server
+- HTTP server behavior, including SSO `start`/`callback`/`poll` flow
+- Static-token authentication
 - Entity name ambiguity
 - Relation endpoint validation
 - Config resolution when changed
+- Redirect URL validation when SSO is configured
 
 ## Release Rules
 
@@ -121,3 +125,6 @@ If asset names or supported platforms change, update:
 - Do not change JSON field names without updating the HTTP API spec.
 - Do not add undocumented API endpoints.
 - Do not add database tables or columns without updating the database design document.
+- Do not reintroduce CLI local-database mode. The CLI is HTTP-only.
+- Do not put `client_secret` or other long-lived secrets behind CLI flags.
+

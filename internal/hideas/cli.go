@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -15,13 +16,9 @@ import (
 
 type GlobalSettings struct {
 	ConfigPath      string
-	Mode            string
-	DB              string
 	Server          string
 	Token           string
-	Identity        string
 	CredentialsPath string
-	AuthorizedKeys  string
 }
 
 func Run(args []string, stdout, stderr io.Writer) int {
@@ -39,12 +36,9 @@ func run(args []string, stdout, stderr io.Writer) error {
 		writeRootHelp(stderr)
 	}
 	showVersion := global.Bool("version", false, "show version")
-	mode := global.String("mode", "", "default operating mode (local|remote-client)")
-	dbPath := global.String("db", "", "SQLite database path")
 	serverURL := global.String("server", "", "hideas server URL")
 	configPath := global.String("config", "", "config file path")
 	token := global.String("token", "", "HTTP bearer token")
-	identity := global.String("identity", "", "SSH private key path for login")
 	credentialsPath := global.String("credentials", "", "credentials file path")
 	if err := global.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
@@ -84,13 +78,13 @@ func run(args []string, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	settings, err := resolveGlobalConfig(resolvedConfigPath, *dbPath, *mode, *serverURL, *token, *identity, *credentialsPath, cfg)
+	settings, err := resolveGlobalConfig(resolvedConfigPath, *serverURL, *token, *credentialsPath, cfg)
 	if err != nil {
 		return err
 	}
 
 	if cmd == "serve" {
-		return runServe(cmdArgs, settings, stdout, stderr)
+		return runServe(cmdArgs, resolvedConfigPath, cfg, stdout, stderr)
 	}
 	if cmd == "login" {
 		return cmdLogin(cmdArgs, settings, stdout, stderr)
@@ -108,18 +102,31 @@ func run(args []string, stdout, stderr io.Writer) error {
 		return cmdVersion(settings, stdout)
 	}
 
-	store, err := openStore(settings)
+	// Help requests for any data-source-bound subcommand must short-circuit
+	// before we try to open a remote store: otherwise `hideas entity --help`
+	// fails simply because there is no token configured yet. Help requests
+	// targeting a specific subcommand (e.g. `entity add --help`) are routed
+	// through the subcommand handler with a nil store so its flag.Usage can
+	// surface the precise usage line.
+	if firstArgIsHelp(cmdArgs) || (len(cmdArgs) == 0 && wantsHelp(cmdArgs)) {
+		writeCommandHelp(stdout, []string{cmd})
+		return nil
+	}
+	if wantsHelp(cmdArgs) {
+		return dispatchCommand(cmd, nil, cmdArgs, stdout, stderr)
+	}
+
+	store, err := openStore(&settings, stderr)
 	if err != nil {
 		return err
 	}
 	defer store.Close()
 
+	return dispatchCommand(cmd, store, cmdArgs, stdout, stderr)
+}
+
+func dispatchCommand(cmd string, store Store, cmdArgs []string, stdout, stderr io.Writer) error {
 	switch cmd {
-	case "init":
-		if err := store.Init(); err != nil {
-			return err
-		}
-		fmt.Fprintf(stdout, "initialized %s\n", store.Path())
 	case "add":
 		return cmdAdd(store, cmdArgs, stdout, stderr)
 	case "search":
@@ -145,7 +152,6 @@ func run(args []string, stdout, stderr io.Writer) error {
 	default:
 		return fmt.Errorf("unknown command: %s", cmd)
 	}
-	return nil
 }
 
 func isHelpArg(v string) bool {
@@ -170,16 +176,18 @@ func firstArgIsHelp(args []string) bool {
 
 func writeRootHelp(w io.Writer) {
 	writeVersionInfo(w, localVersionInfo())
-	fmt.Fprint(w, `Hideas is a personal memory system with local SQLite mode and remote client/server mode.
+	fmt.Fprint(w, `Hideas is a personal memory system. The CLI is a thin client over a hideas server.
 
 Usage:
   hideas [global options] COMMAND [command options] [arguments]
   hideas help [COMMAND]
 
 Core commands:
- init            Initialize the local database
   version         Show the current version and build time
-  status          Show the current operating mode and remote status
+  status          Show the configured server and login state
+  login           Start SSO login against the configured server
+  logout          Remove the stored token for a remote server
+  auth status     Verify the stored remote token
   add             Add a trace
   search          Search traces and entities
   show            Show an entity, trace, or relation by ID
@@ -189,33 +197,25 @@ Core commands:
   entity          Manage entities
   profile         Show or set an entity profile
   type            List or add types
-  db              Inspect the database
+  db              Inspect remote database stats
   export          Export data
 
-Remote auth commands:
-  serve           Run the HTTP server
-  login           Log in to a remote server with an SSH identity
-  auth status     Check whether a stored remote token is valid
-  logout          Remove the stored token for a remote server
+Server commands:
+  serve           Run the HTTP server (reads ~/.hideas/config)
 
 Global options:
-  --db PATH             SQLite database path
   --version             Show version and build time
-  --mode MODE           Default operating mode (local|remote-client)
-  --server URL          Hideas server URL for remote mode
+  --server URL          Hideas server URL
   --config PATH         Config file path
   --token TOKEN         Static HTTP bearer token
-  --identity PATH       SSH private key path for login
   --credentials PATH    Credentials file path
 
 Examples:
-  hideas init
-  hideas version
-  hideas status
+  hideas login --server https://example.com/hideas/
+  hideas login --wait
   hideas add "Discussed SQLite indexing" --type thought
   hideas search "SQLite" --format json
   hideas entity add "Li Lei" --type person
-  hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
 
 Use "hideas help COMMAND" for command-specific help.
 `)
@@ -229,15 +229,15 @@ func writeCommandHelp(w io.Writer, args []string) {
 	writeVersionInfo(w, localVersionInfo())
 	switch args[0] {
 	case "serve":
-		fmt.Fprint(w, "Usage: hideas serve [--db PATH] [--host HOST] [--port PORT] [--base-path PATH] [--token TOKEN] [--authorized-keys PATH]\n")
+		fmt.Fprint(w, "Usage: hideas serve [--config PATH]\n  All other options are read from the config file or HIDEAS_SSO_* env vars.\n")
 	case "status":
 		fmt.Fprint(w, "Usage: hideas status\n")
 	case "login":
-		fmt.Fprint(w, "Usage: hideas login --server URL --identity PATH [--credentials PATH]\n")
+		fmt.Fprint(w, "Usage: hideas login [--server URL] [--credentials PATH] [--wait] [--timeout DURATION]\n")
 	case "logout":
-		fmt.Fprint(w, "Usage: hideas logout --server URL [--credentials PATH]\n")
+		fmt.Fprint(w, "Usage: hideas logout [--server URL] [--credentials PATH]\n")
 	case "auth":
-		fmt.Fprint(w, "Usage: hideas auth status --server URL [--credentials PATH]\n")
+		fmt.Fprint(w, "Usage: hideas auth status [--server URL] [--credentials PATH]\n")
 	case "add":
 		fmt.Fprint(w, "Usage: hideas add CONTENT [--type TYPE] [--at TIME] [--entity NAME] [--entity-id ID]\n")
 	case "search":
@@ -258,7 +258,7 @@ func writeCommandHelp(w io.Writer, args []string) {
 	case "type":
 		fmt.Fprint(w, "Usage: hideas type list\n       hideas type add entity|trace|relation NAME\n")
 	case "db":
-		fmt.Fprint(w, "Usage: hideas db path|stats|check\n")
+		fmt.Fprint(w, "Usage: hideas db stats|check\n")
 	case "export":
 		fmt.Fprint(w, "Usage: hideas export [--format json|markdown]\n")
 	default:
@@ -270,114 +270,128 @@ func writeVersionInfo(w io.Writer, info VersionInfo) {
 	fmt.Fprint(w, formatVersionInfo(info))
 }
 
-func resolveGlobalConfig(configPath, cliDB, cliMode, cliServer, cliToken, cliIdentity, cliCredentials string, cfg Config) (GlobalSettings, error) {
+func resolveGlobalConfig(configPath, cliServer, cliToken, cliCredentials string, cfg Config) (GlobalSettings, error) {
 	settings := GlobalSettings{
 		ConfigPath:      configPath,
-		Mode:            cfg.Mode,
-		DB:              cfg.DB,
 		Server:          cfg.Server,
 		Token:           cfg.Token,
-		Identity:        cfg.Identity,
 		CredentialsPath: cfg.CredentialsPath,
-		AuthorizedKeys:  cfg.AuthorizedKeys,
-	}
-	if v := os.Getenv("HIDEAS_DB"); v != "" {
-		settings.DB = v
-	}
-	if v := os.Getenv("HIDEAS_MODE"); v != "" {
-		settings.Mode = v
 	}
 	if v := os.Getenv("HIDEAS_SERVER"); v != "" {
 		settings.Server = v
-		settings.Mode = ModeRemoteClient
 	}
 	if v := os.Getenv("HIDEAS_TOKEN"); v != "" {
 		settings.Token = v
 	}
-	if v := os.Getenv("HIDEAS_IDENTITY"); v != "" {
-		settings.Identity = v
-	}
 	if v := os.Getenv("HIDEAS_CREDENTIALS"); v != "" {
 		settings.CredentialsPath = v
 	}
-	if v := os.Getenv("HIDEAS_AUTHORIZED_KEYS"); v != "" {
-		settings.AuthorizedKeys = v
-	}
-	if cliDB != "" {
-		settings.DB = cliDB
-	}
-	if cliMode != "" {
-		settings.Mode = cliMode
-	}
 	if cliServer != "" {
 		settings.Server = cliServer
-		settings.Mode = ModeRemoteClient
 	}
 	if cliToken != "" {
 		settings.Token = cliToken
 	}
-	if cliIdentity != "" {
-		settings.Identity = cliIdentity
-	}
 	if cliCredentials != "" {
 		settings.CredentialsPath = cliCredentials
-	}
-	if settings.Mode == "" {
-		if settings.Server != "" {
-			settings.Mode = ModeRemoteClient
-		} else {
-			settings.Mode = ModeLocal
-		}
 	}
 	if settings.CredentialsPath == "" {
 		settings.CredentialsPath = defaultCredentialsPath()
 	}
-	if settings.Mode != ModeLocal && settings.Mode != ModeRemoteClient {
-		return GlobalSettings{}, fmt.Errorf("invalid mode: %s", settings.Mode)
-	}
-	if settings.Mode == ModeRemoteClient && settings.Server != "" && settings.Token == "" {
-		if entry, ok, err := credentialForServer(settings.CredentialsPath, settings.Server); err != nil {
-			return GlobalSettings{}, err
-		} else if ok {
-			settings.Token = entry.Token
-		}
-	}
 	return settings, nil
 }
 
-func openStore(settings GlobalSettings) (Store, error) {
-	if settings.Mode == ModeRemoteClient {
-		if settings.Server == "" {
-			return nil, errors.New("server is required")
+// openStore returns the HTTP-backed Store for command execution. If the stored
+// credentials carry a pending SSO session, it polls once to opportunistically
+// finish the login before issuing the command.
+func openStore(settings *GlobalSettings, stderr io.Writer) (Store, error) {
+	if strings.TrimSpace(settings.Server) == "" {
+		return nil, errors.New("server is required: configure `server` in the config file, set HIDEAS_SERVER, or pass --server")
+	}
+	if settings.Token == "" {
+		entry, ok, err := credentialForServer(settings.CredentialsPath, settings.Server)
+		if err != nil {
+			return nil, err
 		}
-		return NewHTTPStore(settings.Server, settings.Token), nil
+		if ok && entry.Token == "" && entry.PendingSessionID != "" {
+			entry, err = tryFinishPendingLogin(settings.CredentialsPath, settings.Server, entry, stderr)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if ok && entry.Token != "" {
+			settings.Token = entry.Token
+		}
 	}
-	if settings.DB == "" {
-		settings.DB = defaultDBPath()
+	if settings.Token == "" {
+		return nil, errors.New("not logged in: run `hideas login` first")
 	}
-	return OpenSQLite(settings.DB)
+	return NewHTTPStore(settings.Server, settings.Token), nil
 }
 
-func runServe(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
+// tryFinishPendingLogin polls the server once for a pending login session and
+// updates the credentials file accordingly. The caller's settings.Token is set
+// when the poll resolves to ready.
+func tryFinishPendingLogin(credentialsPath, server string, entry CredentialEntry, stderr io.Writer) (CredentialEntry, error) {
+	client := NewHTTPStore(server, "")
+	res, err := client.AuthLoginPoll(entry.PendingSessionID)
+	if err != nil {
+		return entry, nil
+	}
+	switch res.Status {
+	case loginStatusReady:
+		entry.Token = res.Token
+		entry.ExpiresAt = res.ExpiresAt
+		entry.PendingSessionID = ""
+		if err := storeCredential(credentialsPath, server, entry); err != nil {
+			return entry, err
+		}
+		fmt.Fprintf(stderr, "login completed for %s\n", normalizeServerKey(server))
+	case loginStatusExpired:
+		entry.PendingSessionID = ""
+		if err := storeCredential(credentialsPath, server, entry); err != nil {
+			return entry, err
+		}
+		return entry, errors.New("pending login session expired: run `hideas login` again")
+	}
+	return entry, nil
+}
+
+// runServe starts the hideas HTTP server. All configuration is read from the
+// config file or HIDEAS_SSO_* environment variables; no CLI flags besides
+// --config are accepted, by design.
+func runServe(args []string, configPath string, cfg Config, stdout, stderr io.Writer) error {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.Usage = func() { writeCommandHelp(stderr, []string{"serve"}) }
-	dbPath := fs.String("db", settings.DB, "SQLite database path")
-	host := fs.String("host", "127.0.0.1", "listen host")
-	port := fs.Int("port", 8765, "listen port")
-	basePath := fs.String("base-path", "/", "HTTP base path")
-	localToken := fs.String("token", settings.Token, "HTTP bearer token")
-	authorizedKeys := fs.String("authorized-keys", settings.AuthorizedKeys, "authorized SSH public keys file")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
 	}
-	if *dbPath == "" {
-		*dbPath = defaultDBPath()
+	_ = configPath
+	cfg.applySSOEnv()
+	host := strings.TrimSpace(cfg.Host)
+	if host == "" {
+		host = "127.0.0.1"
 	}
-	store, err := OpenSQLite(*dbPath)
+	port := cfg.Port
+	if port == 0 {
+		port = 8765
+	}
+	basePath := cfg.BasePath
+	if basePath == "" {
+		basePath = "/"
+	}
+	dbPath := strings.TrimSpace(cfg.DB)
+	if dbPath == "" {
+		dbPath = defaultDBPath()
+	}
+	if err := validateServerSSOConfig(cfg.SSO, basePath); err != nil {
+		return err
+	}
+	store, err := OpenSQLite(dbPath)
 	if err != nil {
 		return err
 	}
@@ -385,13 +399,47 @@ func runServe(args []string, settings GlobalSettings, stdout, stderr io.Writer) 
 	if err := store.Init(); err != nil {
 		return err
 	}
-	addr := fmt.Sprintf("%s:%d", *host, *port)
-	fmt.Fprintf(stdout, "serving %s on http://%s%s\n", store.Path(), addr, normalizeBasePath(*basePath))
-	auth, err := newServerAuth(ServerAuthConfig{StaticToken: *localToken, AuthorizedKeysPath: *authorizedKeys})
+	auth, err := newServerAuth(ServerAuthConfig{StaticToken: cfg.Token, SSO: cfg.SSO})
 	if err != nil {
 		return err
 	}
-	return http.ListenAndServe(addr, NewHTTPHandler(store, auth, *basePath))
+	addr := fmt.Sprintf("%s:%d", host, port)
+	fmt.Fprintf(stdout, "serving %s on http://%s%s\n", store.Path(), addr, normalizeBasePath(basePath))
+	return http.ListenAndServe(addr, NewHTTPHandler(store, auth, basePath))
+}
+
+// validateServerSSOConfig verifies that, when SSO is configured, the redirect
+// URL ends with the API callback path under the configured base path.
+func validateServerSSOConfig(sso SSOConfig, basePath string) error {
+	missing := []string{}
+	if strings.TrimSpace(sso.Issuer) == "" {
+		missing = append(missing, "issuer")
+	}
+	if strings.TrimSpace(sso.ClientID) == "" {
+		missing = append(missing, "client_id")
+	}
+	if strings.TrimSpace(sso.ClientSecret) == "" {
+		missing = append(missing, "client_secret")
+	}
+	if strings.TrimSpace(sso.RedirectURL) == "" {
+		missing = append(missing, "redirect_url")
+	}
+	// Allow running with no SSO at all (static-token only) for tests/CI.
+	if len(missing) == 4 {
+		return nil
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("incomplete sso configuration: missing %s", strings.Join(missing, ", "))
+	}
+	expectedSuffix := normalizeBasePath(basePath) + "api/v1/auth/callback"
+	parsed, err := url.Parse(strings.TrimSpace(sso.RedirectURL))
+	if err != nil {
+		return fmt.Errorf("invalid redirect_url: %w", err)
+	}
+	if parsed.Path != expectedSuffix {
+		return fmt.Errorf("redirect_url path must end with %s (got %s)", expectedSuffix, parsed.Path)
+	}
+	return nil
 }
 
 func cmdLogin(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
@@ -399,8 +447,9 @@ func cmdLogin(args []string, settings GlobalSettings, stdout, stderr io.Writer) 
 	fs.SetOutput(stderr)
 	fs.Usage = func() { writeCommandHelp(stderr, []string{"login"}) }
 	server := fs.String("server", settings.Server, "hideas server URL")
-	identity := fs.String("identity", settings.Identity, "SSH private key path")
 	credentialsPath := fs.String("credentials", settings.CredentialsPath, "credentials file path")
+	wait := fs.Bool("wait", false, "block until the browser-side authorization completes")
+	timeout := fs.Duration("timeout", 5*time.Minute, "maximum wait time when --wait is used")
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -408,35 +457,53 @@ func cmdLogin(args []string, settings GlobalSettings, stdout, stderr io.Writer) 
 		return err
 	}
 	if strings.TrimSpace(*server) == "" {
-		return errors.New("server is required")
-	}
-	if strings.TrimSpace(*identity) == "" {
-		return errors.New("identity is required")
+		return errors.New("server is required: pass --server or configure `server` in the config file")
 	}
 	client := NewHTTPStore(*server, "")
-	challenge, err := client.AuthChallenge()
+	start, err := client.AuthLoginStart()
 	if err != nil {
 		return err
 	}
-	publicKey, signature, err := signChallenge(*identity, challenge.Challenge)
-	if err != nil {
-		return err
-	}
-	login, err := client.AuthLogin(challenge.ChallengeID, publicKey, signature)
-	if err != nil {
-		return err
-	}
-	if err := storeCredential(*credentialsPath, *server, CredentialEntry{Token: login.Token, ExpiresAt: login.ExpiresAt}); err != nil {
+	entry := CredentialEntry{PendingSessionID: start.SessionID}
+	if err := storeCredential(*credentialsPath, *server, entry); err != nil {
 		return err
 	}
 	if err := validateCredentialFileMode(*credentialsPath); err != nil {
 		return err
 	}
-	if err := persistRemoteMode(settings.ConfigPath, *server, *credentialsPath); err != nil {
+	if err := persistRemoteServer(settings.ConfigPath, *server, *credentialsPath); err != nil {
 		return err
 	}
-	fmt.Fprintf(stdout, "logged in to %s until %s\n", normalizeServerKey(*server), time.UnixMilli(login.ExpiresAt).UTC().Format(time.RFC3339))
-	return nil
+	fmt.Fprintf(stdout, "Open the following URL in your browser to complete login:\n\n  %s\n\n", start.AuthorizeURL)
+	fmt.Fprintf(stdout, "Session expires at %s.\n", time.UnixMilli(start.ExpiresAt).UTC().Format(time.RFC3339))
+	if !*wait {
+		fmt.Fprintln(stdout, "After authorizing, run any hideas command (or `hideas auth status`) to finish login.")
+		return nil
+	}
+	fmt.Fprintln(stdout, "Waiting for browser-side authorization...")
+	deadline := time.Now().Add(*timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(2 * time.Second)
+		res, err := client.AuthLoginPoll(start.SessionID)
+		if err != nil {
+			return err
+		}
+		switch res.Status {
+		case loginStatusReady:
+			entry.Token = res.Token
+			entry.ExpiresAt = res.ExpiresAt
+			entry.PendingSessionID = ""
+			if err := storeCredential(*credentialsPath, *server, entry); err != nil {
+				return err
+			}
+			fmt.Fprintf(stdout, "logged in to %s until %s\n", normalizeServerKey(*server), time.UnixMilli(res.ExpiresAt).UTC().Format(time.RFC3339))
+			return nil
+		case loginStatusExpired:
+			_ = removeCredential(*credentialsPath, *server)
+			return errors.New("login session expired before the browser completed authorization")
+		}
+	}
+	return errors.New("login timed out: rerun `hideas login --wait` or finish in browser and run any hideas command")
 }
 
 func cmdLogout(args []string, settings GlobalSettings, stdout, stderr io.Writer) error {
@@ -457,7 +524,7 @@ func cmdLogout(args []string, settings GlobalSettings, stdout, stderr io.Writer)
 	if err := removeCredential(*credentialsPath, *server); err != nil {
 		return err
 	}
-	if err := clearRemoteMode(settings.ConfigPath, *server); err != nil {
+	if err := clearRemoteServer(settings.ConfigPath, *server); err != nil {
 		return err
 	}
 	fmt.Fprintf(stdout, "logged out from %s\n", normalizeServerKey(*server))
@@ -466,19 +533,14 @@ func cmdLogout(args []string, settings GlobalSettings, stdout, stderr io.Writer)
 
 func cmdStatus(settings GlobalSettings, stdout io.Writer) error {
 	server := normalizeServerKey(settings.Server)
-	fmt.Fprintf(stdout, "mode: %s\n", settings.Mode)
 	if server == "" {
-		fmt.Fprintln(stdout, "server prefix: (none)")
+		fmt.Fprintln(stdout, "server: (none)")
 		fmt.Fprintln(stdout, "login: not logged in")
 		return nil
 	}
-	fmt.Fprintf(stdout, "server prefix: %s\n", server)
+	fmt.Fprintf(stdout, "server: %s\n", server)
 	if settings.Token != "" {
-		if entry, ok, err := credentialForServer(settings.CredentialsPath, settings.Server); err == nil && ok {
-			fmt.Fprintf(stdout, "login: logged in until %s\n", time.UnixMilli(entry.ExpiresAt).UTC().Format(time.RFC3339))
-			return nil
-		}
-		fmt.Fprintln(stdout, "login: authenticated with token")
+		fmt.Fprintln(stdout, "login: authenticated with static token")
 		return nil
 	}
 	entry, ok, err := credentialForServer(settings.CredentialsPath, settings.Server)
@@ -489,25 +551,30 @@ func cmdStatus(settings GlobalSettings, stdout io.Writer) error {
 		fmt.Fprintln(stdout, "login: not logged in")
 		return nil
 	}
-	fmt.Fprintf(stdout, "login: logged in until %s\n", time.UnixMilli(entry.ExpiresAt).UTC().Format(time.RFC3339))
+	if entry.Token != "" {
+		fmt.Fprintf(stdout, "login: logged in until %s\n", time.UnixMilli(entry.ExpiresAt).UTC().Format(time.RFC3339))
+		return nil
+	}
+	if entry.PendingSessionID != "" {
+		fmt.Fprintln(stdout, "login: pending browser authorization")
+	}
 	return nil
 }
 
 func cmdVersion(settings GlobalSettings, stdout io.Writer) error {
-	if settings.Mode == ModeRemoteClient && strings.TrimSpace(settings.Server) != "" {
+	if strings.TrimSpace(settings.Server) != "" {
 		store := NewHTTPStore(settings.Server, settings.Token)
 		info, err := store.Version()
-		if err != nil {
-			return err
+		if err == nil {
+			writeVersionInfo(stdout, info)
+			return nil
 		}
-		writeVersionInfo(stdout, info)
-		return nil
 	}
 	writeVersionInfo(stdout, localVersionInfo())
 	return nil
 }
 
-func persistRemoteMode(configPath, server, credentialsPath string) error {
+func persistRemoteServer(configPath, server, credentialsPath string) error {
 	if strings.TrimSpace(configPath) == "" {
 		return errors.New("config path is not available")
 	}
@@ -515,14 +582,13 @@ func persistRemoteMode(configPath, server, credentialsPath string) error {
 	if err != nil {
 		return err
 	}
-	cfg.Mode = ModeRemoteClient
 	cfg.Server = normalizeServerKey(server)
 	cfg.Token = ""
 	cfg.CredentialsPath = strings.TrimSpace(credentialsPath)
 	return saveConfig(configPath, cfg)
 }
 
-func clearRemoteMode(configPath, server string) error {
+func clearRemoteServer(configPath, server string) error {
 	if strings.TrimSpace(configPath) == "" {
 		return errors.New("config path is not available")
 	}
@@ -533,7 +599,6 @@ func clearRemoteMode(configPath, server string) error {
 	if normalizeServerKey(cfg.Server) != normalizeServerKey(server) {
 		return nil
 	}
-	cfg.Mode = ModeLocal
 	cfg.Server = ""
 	return saveConfig(configPath, cfg)
 }
@@ -563,7 +628,17 @@ func cmdAuth(args []string, settings GlobalSettings, stdout, stderr io.Writer) e
 		if err != nil {
 			return err
 		}
-		if !ok {
+		if ok && entry.Token == "" && entry.PendingSessionID != "" {
+			entry, err = tryFinishPendingLogin(*credentialsPath, *server, entry, stderr)
+			if err != nil {
+				return err
+			}
+		}
+		if entry.Token == "" {
+			if entry.PendingSessionID != "" {
+				fmt.Fprintf(stdout, "pending login for %s: open the authorization URL in your browser\n", normalizeServerKey(*server))
+				return nil
+			}
 			fmt.Fprintf(stdout, "not logged in for %s\n", normalizeServerKey(*server))
 			return nil
 		}
@@ -1005,11 +1080,9 @@ func cmdDB(store Store, args []string, stdout io.Writer) error {
 		return nil
 	}
 	if len(args) != 1 {
-		return errors.New("usage: db path|stats|check")
+		return errors.New("usage: db stats|check")
 	}
 	switch args[0] {
-	case "path":
-		fmt.Fprintln(stdout, store.Path())
 	case "stats":
 		st, err := store.Stats()
 		if err != nil {

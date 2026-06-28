@@ -1,102 +1,163 @@
 package hideas
 
 import (
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
 	"sync"
 	"time"
-
-	"golang.org/x/crypto/ssh"
 )
 
 const (
 	defaultSessionTTL   = 7 * 24 * time.Hour
-	defaultChallengeTTL = 60 * time.Second
+	defaultLoginTTL     = 10 * time.Minute
+	defaultScopes       = "openid profile email"
+	loginStatusPending  = "pending"
+	loginStatusReady    = "ready"
+	loginStatusExpired  = "expired"
+	defaultHTTPTimeout  = 15 * time.Second
 )
 
+// Credentials is the on-disk credentials.json file. It stores per-server
+// hideas session tokens and any pending SSO login session ID waiting for
+// browser-side completion.
 type Credentials struct {
 	Servers map[string]CredentialEntry `json:"servers"`
 }
 
 type CredentialEntry struct {
-	Token     string `json:"token"`
-	ExpiresAt int64  `json:"expires_at,omitempty"`
+	Token            string `json:"token,omitempty"`
+	ExpiresAt        int64  `json:"expires_at,omitempty"`
+	PendingSessionID string `json:"pending_session_id,omitempty"`
 }
 
+// ServerAuthConfig configures the server-side authenticator.
 type ServerAuthConfig struct {
-	StaticToken        string
-	AuthorizedKeysPath string
-	SessionTTL         time.Duration
-	ChallengeTTL       time.Duration
+	StaticToken string
+	SessionTTL  time.Duration
+	LoginTTL    time.Duration
+	SSO         SSOConfig
+	HTTPClient  *http.Client
 }
 
+// serverAuth is the server-side authenticator. It holds:
+//   - the optional static bearer token,
+//   - issued hideas session tokens,
+//   - pending SSO login sessions, indexed both by session ID and by OAuth state.
 type serverAuth struct {
-	staticToken  string
-	sessionTTL   time.Duration
-	challengeTTL time.Duration
+	staticToken string
+	sessionTTL  time.Duration
+	loginTTL    time.Duration
+	sso         SSOConfig
+	provider    *oidcProvider
+	httpClient  *http.Client
 
-	mu            sync.Mutex
-	allowedKeys   map[string]ssh.PublicKey
-	challenges    map[string]authChallenge
-	sessionTokens map[string]issuedToken
+	mu             sync.Mutex
+	sessions       map[string]*loginSession // session_id -> session
+	stateIndex     map[string]string        // oauth state -> session_id
+	sessionTokens  map[string]issuedToken   // bearer token -> issued info
 }
 
-type authChallenge struct {
-	PublicChallenge []byte
-	ExpiresAt       time.Time
+type loginSession struct {
+	ID            string
+	State         string
+	CodeVerifier  string
+	Status        string
+	Token         string
+	Subject       string
+	ExpiresAt     time.Time
+	TokenExpires  time.Time
+	Error         string
+	CreatedAt     time.Time
 }
 
 type issuedToken struct {
 	Token     string
 	ExpiresAt time.Time
-	PublicKey string
+	Subject   string
 }
 
-type authChallengeResponse struct {
-	ChallengeID string `json:"challenge_id"`
-	Challenge   string `json:"challenge"`
-	ExpiresAt   int64  `json:"expires_at"`
+type authLoginStartResponse struct {
+	SessionID    string `json:"session_id"`
+	AuthorizeURL string `json:"authorize_url"`
+	ExpiresAt    int64  `json:"expires_at"`
 }
 
-type authLoginResponse struct {
-	Token     string `json:"token"`
+type authLoginPollResponse struct {
+	Status    string `json:"status"`
+	Token     string `json:"token,omitempty"`
+	ExpiresAt int64  `json:"expires_at,omitempty"`
+	Error     string `json:"error,omitempty"`
+}
+
+type authMeResponse struct {
+	Subject   string `json:"subject"`
 	ExpiresAt int64  `json:"expires_at"`
+}
+
+// oidcProvider holds the OIDC endpoints discovered from the issuer.
+type oidcProvider struct {
+	Issuer                string `json:"issuer"`
+	AuthorizationEndpoint string `json:"authorization_endpoint"`
+	TokenEndpoint         string `json:"token_endpoint"`
+	UserInfoEndpoint      string `json:"userinfo_endpoint"`
 }
 
 func newServerAuth(cfg ServerAuthConfig) (*serverAuth, error) {
 	auth := &serverAuth{
 		staticToken:   strings.TrimSpace(cfg.StaticToken),
 		sessionTTL:    cfg.SessionTTL,
-		challengeTTL:  cfg.ChallengeTTL,
-		allowedKeys:   map[string]ssh.PublicKey{},
-		challenges:    map[string]authChallenge{},
+		loginTTL:      cfg.LoginTTL,
+		sso:           cfg.SSO,
+		httpClient:    cfg.HTTPClient,
+		sessions:      map[string]*loginSession{},
+		stateIndex:    map[string]string{},
 		sessionTokens: map[string]issuedToken{},
 	}
 	if auth.sessionTTL <= 0 {
 		auth.sessionTTL = defaultSessionTTL
 	}
-	if auth.challengeTTL <= 0 {
-		auth.challengeTTL = defaultChallengeTTL
+	if auth.loginTTL <= 0 {
+		auth.loginTTL = defaultLoginTTL
 	}
-	if strings.TrimSpace(cfg.AuthorizedKeysPath) == "" {
-		return auth, nil
+	if auth.httpClient == nil {
+		auth.httpClient = &http.Client{Timeout: defaultHTTPTimeout}
 	}
-	keys, err := loadAuthorizedKeys(cfg.AuthorizedKeysPath)
-	if err != nil {
-		return nil, err
+	if auth.ssoConfigured() {
+		provider, err := discoverOIDC(auth.httpClient, auth.sso.Issuer)
+		if err != nil {
+			return nil, fmt.Errorf("oidc discovery failed: %w", err)
+		}
+		auth.provider = provider
 	}
-	auth.allowedKeys = keys
 	return auth, nil
 }
 
+// ssoConfigured reports whether SSO login can be served. It requires the full
+// set of OIDC client credentials and redirect URL.
+func (a *serverAuth) ssoConfigured() bool {
+	return a != nil &&
+		strings.TrimSpace(a.sso.Issuer) != "" &&
+		strings.TrimSpace(a.sso.ClientID) != "" &&
+		strings.TrimSpace(a.sso.ClientSecret) != "" &&
+		strings.TrimSpace(a.sso.RedirectURL) != ""
+}
+
+// enabled reports whether any authentication mechanism is configured. When
+// false, the server serves data unauthenticated. This matches the local-dev
+// fallback used by the test suite and personal-use bare-bones deployments.
 func (a *serverAuth) enabled() bool {
-	return a != nil && (a.staticToken != "" || len(a.allowedKeys) > 0)
+	return a != nil && (a.staticToken != "" || a.ssoConfigured())
 }
 
 func (a *serverAuth) checkBearer(header string) bool {
@@ -120,135 +181,288 @@ func (a *serverAuth) checkBearer(header string) bool {
 	return ok && session.ExpiresAt.After(time.Now().UTC())
 }
 
-func (a *serverAuth) issueChallenge() (authChallengeResponse, error) {
-	if a == nil || len(a.allowedKeys) == 0 {
-		return authChallengeResponse{}, errors.New("ssh login is not configured")
+// subjectFor returns the subject claim bound to a bearer token, when it was
+// issued through SSO. Static tokens have no subject.
+func (a *serverAuth) subjectFor(header string) (issuedToken, bool) {
+	if !strings.HasPrefix(header, "Bearer ") {
+		return issuedToken{}, false
 	}
-	challengeID, err := randomToken(24)
-	if err != nil {
-		return authChallengeResponse{}, err
-	}
-	payload := make([]byte, 32)
-	if _, err := rand.Read(payload); err != nil {
-		return authChallengeResponse{}, err
-	}
-	expiresAt := time.Now().UTC().Add(a.challengeTTL)
+	token := strings.TrimSpace(strings.TrimPrefix(header, "Bearer "))
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.pruneLocked(time.Now().UTC())
-	a.challenges[challengeID] = authChallenge{PublicChallenge: payload, ExpiresAt: expiresAt}
-	return authChallengeResponse{
-		ChallengeID: challengeID,
-		Challenge:   base64.StdEncoding.EncodeToString(payload),
-		ExpiresAt:   expiresAt.UnixMilli(),
+	info, ok := a.sessionTokens[token]
+	return info, ok && info.ExpiresAt.After(time.Now().UTC())
+}
+
+// loginStart creates a new login session and returns the authorize URL the
+// user should open in a browser. The session ID is then used by the CLI to
+// poll for completion.
+func (a *serverAuth) loginStart() (authLoginStartResponse, error) {
+	if !a.ssoConfigured() || a.provider == nil {
+		return authLoginStartResponse{}, errors.New("sso login is not configured")
+	}
+	sessionID, err := randomToken(24)
+	if err != nil {
+		return authLoginStartResponse{}, err
+	}
+	state, err := randomToken(24)
+	if err != nil {
+		return authLoginStartResponse{}, err
+	}
+	verifier, err := randomToken(32)
+	if err != nil {
+		return authLoginStartResponse{}, err
+	}
+	now := time.Now().UTC()
+	session := &loginSession{
+		ID:           sessionID,
+		State:        state,
+		CodeVerifier: verifier,
+		Status:       loginStatusPending,
+		CreatedAt:    now,
+		ExpiresAt:    now.Add(a.loginTTL),
+	}
+	a.mu.Lock()
+	a.pruneLocked(now)
+	a.sessions[sessionID] = session
+	a.stateIndex[state] = sessionID
+	a.mu.Unlock()
+
+	scopes := strings.TrimSpace(a.sso.Scopes)
+	if scopes == "" {
+		scopes = defaultScopes
+	}
+	challenge := pkceChallenge(verifier)
+	q := url.Values{}
+	q.Set("response_type", "code")
+	q.Set("client_id", a.sso.ClientID)
+	q.Set("redirect_uri", a.sso.RedirectURL)
+	q.Set("scope", scopes)
+	q.Set("state", state)
+	q.Set("code_challenge", challenge)
+	q.Set("code_challenge_method", "S256")
+	authURL := a.provider.AuthorizationEndpoint
+	if strings.Contains(authURL, "?") {
+		authURL += "&" + q.Encode()
+	} else {
+		authURL += "?" + q.Encode()
+	}
+	return authLoginStartResponse{
+		SessionID:    sessionID,
+		AuthorizeURL: authURL,
+		ExpiresAt:    session.ExpiresAt.UnixMilli(),
 	}, nil
 }
 
-func (a *serverAuth) login(challengeID, publicKeyText string, signature []byte) (authLoginResponse, error) {
-	if a == nil || len(a.allowedKeys) == 0 {
-		return authLoginResponse{}, errors.New("ssh login is not configured")
+// loginCallback finishes the SSO flow: exchange code -> access_token,
+// call userinfo to obtain the subject, mint a hideas session token, and mark
+// the matching login session as ready so the CLI's next poll succeeds.
+func (a *serverAuth) loginCallback(ctx context.Context, state, code string) error {
+	if !a.ssoConfigured() || a.provider == nil {
+		return errors.New("sso login is not configured")
+	}
+	a.mu.Lock()
+	sessionID, ok := a.stateIndex[state]
+	if !ok {
+		a.mu.Unlock()
+		return errors.New("unknown or expired state")
+	}
+	session, ok := a.sessions[sessionID]
+	if !ok {
+		delete(a.stateIndex, state)
+		a.mu.Unlock()
+		return errors.New("unknown or expired state")
 	}
 	now := time.Now().UTC()
-	a.mu.Lock()
-	challenge, ok := a.challenges[challengeID]
-	if ok {
-		delete(a.challenges, challengeID)
+	if !session.ExpiresAt.After(now) {
+		session.Status = loginStatusExpired
+		a.mu.Unlock()
+		return errors.New("login session expired")
 	}
-	a.pruneLocked(now)
+	verifier := session.CodeVerifier
 	a.mu.Unlock()
-	if !ok || !challenge.ExpiresAt.After(now) {
-		return authLoginResponse{}, errors.New("invalid or expired challenge")
-	}
 
-	normalizedKey, key, err := parseAuthorizedKeyLine(publicKeyText)
+	tokenResp, err := exchangeCode(ctx, a.httpClient, a.provider.TokenEndpoint, a.sso.ClientID, a.sso.ClientSecret, code, verifier, a.sso.RedirectURL)
 	if err != nil {
-		return authLoginResponse{}, errors.New("invalid public key")
+		a.failSession(sessionID, err.Error())
+		return err
 	}
-	allowed, ok := a.allowedKeys[normalizedKey]
-	if !ok || string(allowed.Marshal()) != string(key.Marshal()) {
-		return authLoginResponse{}, errors.New("public key is not authorized")
+	subject, err := fetchUserInfo(ctx, a.httpClient, a.provider.UserInfoEndpoint, tokenResp.AccessToken)
+	if err != nil {
+		a.failSession(sessionID, err.Error())
+		return err
 	}
-
-	var sig ssh.Signature
-	if err := ssh.Unmarshal(signature, &sig); err != nil {
-		return authLoginResponse{}, errors.New("invalid signature")
-	}
-	if err := key.Verify(challenge.PublicChallenge, &sig); err != nil {
-		return authLoginResponse{}, errors.New("signature verification failed")
-	}
-
 	token, err := randomToken(32)
 	if err != nil {
-		return authLoginResponse{}, err
+		a.failSession(sessionID, err.Error())
+		return err
 	}
 	expiresAt := now.Add(a.sessionTTL)
 	a.mu.Lock()
-	a.sessionTokens[token] = issuedToken{Token: token, ExpiresAt: expiresAt, PublicKey: normalizedKey}
-	a.mu.Unlock()
-	return authLoginResponse{Token: token, ExpiresAt: expiresAt.UnixMilli()}, nil
+	defer a.mu.Unlock()
+	a.sessionTokens[token] = issuedToken{Token: token, ExpiresAt: expiresAt, Subject: subject}
+	session.Status = loginStatusReady
+	session.Token = token
+	session.TokenExpires = expiresAt
+	session.Subject = subject
+	delete(a.stateIndex, state)
+	return nil
+}
+
+func (a *serverAuth) failSession(sessionID, msg string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if session, ok := a.sessions[sessionID]; ok {
+		session.Status = loginStatusExpired
+		session.Error = msg
+		delete(a.stateIndex, session.State)
+	}
+}
+
+// loginPoll returns the current state of a login session. Once the response
+// status is "ready", the token is returned exactly once; subsequent polls of
+// the same session report "expired".
+func (a *serverAuth) loginPoll(sessionID string) (authLoginPollResponse, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	now := time.Now().UTC()
+	a.pruneLocked(now)
+	session, ok := a.sessions[sessionID]
+	if !ok {
+		return authLoginPollResponse{Status: loginStatusExpired}, nil
+	}
+	if !session.ExpiresAt.After(now) && session.Status != loginStatusReady {
+		session.Status = loginStatusExpired
+	}
+	resp := authLoginPollResponse{Status: session.Status, Error: session.Error}
+	if session.Status == loginStatusReady {
+		resp.Token = session.Token
+		resp.ExpiresAt = session.TokenExpires.UnixMilli()
+		// Consume the session so the token is only delivered once.
+		delete(a.sessions, sessionID)
+		delete(a.stateIndex, session.State)
+	}
+	return resp, nil
 }
 
 func (a *serverAuth) pruneLocked(now time.Time) {
-	for id, challenge := range a.challenges {
-		if !challenge.ExpiresAt.After(now) {
-			delete(a.challenges, id)
+	for id, session := range a.sessions {
+		if session.Status == loginStatusReady {
+			continue
+		}
+		if !session.ExpiresAt.After(now) {
+			delete(a.sessions, id)
+			delete(a.stateIndex, session.State)
 		}
 	}
-	for token, session := range a.sessionTokens {
-		if !session.ExpiresAt.After(now) {
+	for token, info := range a.sessionTokens {
+		if !info.ExpiresAt.After(now) {
 			delete(a.sessionTokens, token)
 		}
 	}
 }
 
-func loadAuthorizedKeys(path string) (map[string]ssh.PublicKey, error) {
-	b, err := os.ReadFile(path)
+// discoverOIDC fetches the OIDC discovery document and returns the resolved
+// endpoint URLs.
+func discoverOIDC(client *http.Client, issuer string) (*oidcProvider, error) {
+	base := strings.TrimRight(strings.TrimSpace(issuer), "/")
+	if base == "" {
+		return nil, errors.New("issuer is empty")
+	}
+	url := base + "/.well-known/openid-configuration"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
 	if err != nil {
 		return nil, err
 	}
-	keys := map[string]ssh.PublicKey{}
-	rest := b
-	for len(rest) > 0 {
-		pub, _, _, next, err := ssh.ParseAuthorizedKey(rest)
-		if err != nil {
-			return nil, err
-		}
-		normalized := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub)))
-		keys[normalized] = pub
-		rest = next
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
 	}
-	if len(keys) == 0 {
-		return nil, errors.New("authorized keys file is empty")
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("discovery returned %d", resp.StatusCode)
 	}
-	return keys, nil
+	var p oidcProvider
+	if err := json.NewDecoder(resp.Body).Decode(&p); err != nil {
+		return nil, err
+	}
+	if p.AuthorizationEndpoint == "" || p.TokenEndpoint == "" || p.UserInfoEndpoint == "" {
+		return nil, errors.New("incomplete discovery document")
+	}
+	return &p, nil
 }
 
-func parseAuthorizedKeyLine(v string) (string, ssh.PublicKey, error) {
-	pub, _, _, _, err := ssh.ParseAuthorizedKey([]byte(strings.TrimSpace(v)))
-	if err != nil {
-		return "", nil, err
-	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(pub))), pub, nil
+type tokenResponse struct {
+	AccessToken string `json:"access_token"`
+	TokenType   string `json:"token_type"`
+	ExpiresIn   int    `json:"expires_in"`
+	IDToken     string `json:"id_token,omitempty"`
 }
 
-func signChallenge(identityPath, challengeBase64 string) (string, string, error) {
-	b, err := os.ReadFile(identityPath)
+func exchangeCode(ctx context.Context, client *http.Client, tokenURL, clientID, clientSecret, code, codeVerifier, redirectURL string) (tokenResponse, error) {
+	form := url.Values{}
+	form.Set("grant_type", "authorization_code")
+	form.Set("code", code)
+	form.Set("redirect_uri", redirectURL)
+	form.Set("client_id", clientID)
+	form.Set("client_secret", clientSecret)
+	form.Set("code_verifier", codeVerifier)
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, tokenURL, strings.NewReader(form.Encode()))
 	if err != nil {
-		return "", "", err
+		return tokenResponse{}, err
 	}
-	signer, err := ssh.ParsePrivateKey(b)
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", err
+		return tokenResponse{}, err
 	}
-	challenge, err := base64.StdEncoding.DecodeString(challengeBase64)
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		return tokenResponse{}, fmt.Errorf("token exchange failed: %d: %s", resp.StatusCode, strings.TrimSpace(string(body)))
+	}
+	var out tokenResponse
+	if err := json.NewDecoder(resp.Body).Decode(&out); err != nil {
+		return tokenResponse{}, err
+	}
+	if strings.TrimSpace(out.AccessToken) == "" {
+		return tokenResponse{}, errors.New("empty access_token")
+	}
+	return out, nil
+}
+
+func fetchUserInfo(ctx context.Context, client *http.Client, userInfoURL, accessToken string) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, userInfoURL, nil)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	sig, err := signer.Sign(rand.Reader, challenge)
+	req.Header.Set("Authorization", "Bearer "+accessToken)
+	req.Header.Set("Accept", "application/json")
+	resp, err := client.Do(req)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
-	return strings.TrimSpace(string(ssh.MarshalAuthorizedKey(signer.PublicKey()))), base64.StdEncoding.EncodeToString(ssh.Marshal(sig)), nil
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("userinfo failed: %d", resp.StatusCode)
+	}
+	var info struct {
+		Sub string `json:"sub"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&info); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(info.Sub) == "" {
+		return "", errors.New("userinfo missing sub")
+	}
+	return info.Sub, nil
+}
+
+func pkceChallenge(verifier string) string {
+	sum := sha256.Sum256([]byte(verifier))
+	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
 func defaultCredentialsPath() string {
@@ -315,6 +529,8 @@ func saveCredentials(path string, creds Credentials) error {
 	return os.Chmod(path, 0600)
 }
 
+// credentialForServer returns the stored entry for a server, treating expired
+// tokens as missing. Pending sessions are surfaced regardless of token state.
 func credentialForServer(path, server string) (CredentialEntry, bool, error) {
 	creds, err := loadCredentials(path)
 	if err != nil {
@@ -324,7 +540,11 @@ func credentialForServer(path, server string) (CredentialEntry, bool, error) {
 	if !ok {
 		return CredentialEntry{}, false, nil
 	}
-	if entry.ExpiresAt != 0 && entry.ExpiresAt <= time.Now().UTC().UnixMilli() {
+	if entry.Token != "" && entry.ExpiresAt != 0 && entry.ExpiresAt <= time.Now().UTC().UnixMilli() {
+		entry.Token = ""
+		entry.ExpiresAt = 0
+	}
+	if entry.Token == "" && entry.PendingSessionID == "" {
 		return CredentialEntry{}, false, nil
 	}
 	return entry, true, nil

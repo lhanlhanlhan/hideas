@@ -1,26 +1,42 @@
 package hideas
 
 import (
-	"bufio"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/BurntSushi/toml"
 )
 
-const (
-	ModeLocal        = "local"
-	ModeRemoteClient = "remote-client"
-)
-
+// Config is the on-disk hideas configuration shared by the CLI client and the
+// hideas serve process. It uses TOML as the file format.
 type Config struct {
-	Mode            string
-	DB              string
-	Server          string
-	Token           string
-	Identity        string
-	CredentialsPath string
-	AuthorizedKeys  string
+	// Server is the hideas server URL used by the CLI client.
+	Server string `toml:"server"`
+	// Token is an optional static bearer token. On the client, it overrides any
+	// stored credentials. On the server, it enables a CI/self-test login path.
+	Token string `toml:"token"`
+	// CredentialsPath is the client-side credentials file path.
+	CredentialsPath string `toml:"credentials"`
+
+	// Server-only fields.
+	DB       string `toml:"db"`
+	Host     string `toml:"host"`
+	Port     int    `toml:"port"`
+	BasePath string `toml:"base_path"`
+
+	SSO SSOConfig `toml:"sso"`
+}
+
+// SSOConfig describes how the hideas server reaches an OIDC-compatible SSO.
+type SSOConfig struct {
+	Issuer       string `toml:"issuer"`
+	ClientID     string `toml:"client_id"`
+	ClientSecret string `toml:"client_secret"`
+	RedirectURL  string `toml:"redirect_url"`
+	Scopes       string `toml:"scopes"`
 }
 
 func defaultHideasDir() string {
@@ -49,46 +65,18 @@ func loadConfig(path string) (Config, error) {
 	if path == "" {
 		return Config{}, nil
 	}
-	f, err := os.Open(path)
+	b, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
 		return Config{}, nil
 	}
 	if err != nil {
 		return Config{}, err
 	}
-	defer f.Close()
-
 	var cfg Config
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		key, value, ok := strings.Cut(line, "=")
-		if !ok {
-			continue
-		}
-		key = strings.TrimSpace(key)
-		value = strings.Trim(strings.TrimSpace(value), `"'`)
-		switch key {
-		case "mode":
-			cfg.Mode = value
-		case "db":
-			cfg.DB = value
-		case "server":
-			cfg.Server = value
-		case "token":
-			cfg.Token = value
-		case "identity":
-			cfg.Identity = value
-		case "credentials":
-			cfg.CredentialsPath = value
-		case "authorized_keys":
-			cfg.AuthorizedKeys = value
-		}
+	if err := toml.Unmarshal(b, &cfg); err != nil {
+		return Config{}, fmt.Errorf("parse config %s: %w", path, err)
 	}
-	return cfg, scanner.Err()
+	return cfg, nil
 }
 
 func saveConfig(path string, cfg Config) error {
@@ -96,10 +84,7 @@ func saveConfig(path string, cfg Config) error {
 		path = defaultConfigPath()
 	}
 	if path == "" {
-		return fmt.Errorf("config path is not available")
-	}
-	if cfg.Mode == ModeLocal {
-		cfg.Mode = ""
+		return errors.New("config path is not available")
 	}
 	dir := filepath.Dir(path)
 	if dir != "." && dir != "" {
@@ -111,21 +96,31 @@ func saveConfig(path string, cfg Config) error {
 		}
 	}
 	var b strings.Builder
-	writeConfigLine := func(key, value string) {
-		if value == "" {
-			return
-		}
-		fmt.Fprintf(&b, "%s = %q\n", key, value)
+	if err := toml.NewEncoder(&b).Encode(cfg); err != nil {
+		return err
 	}
-	writeConfigLine("mode", cfg.Mode)
-	writeConfigLine("db", cfg.DB)
-	writeConfigLine("server", cfg.Server)
-	writeConfigLine("token", cfg.Token)
-	writeConfigLine("identity", cfg.Identity)
-	writeConfigLine("credentials", cfg.CredentialsPath)
-	writeConfigLine("authorized_keys", cfg.AuthorizedKeys)
 	if err := os.WriteFile(path, []byte(b.String()), 0600); err != nil {
 		return err
 	}
 	return os.Chmod(path, 0600)
+}
+
+// applySSOEnv overlays SSO settings from environment variables. Empty env
+// values do not clear configured fields.
+func (c *Config) applySSOEnv() {
+	if v := os.Getenv("HIDEAS_SSO_ISSUER"); v != "" {
+		c.SSO.Issuer = v
+	}
+	if v := os.Getenv("HIDEAS_SSO_CLIENT_ID"); v != "" {
+		c.SSO.ClientID = v
+	}
+	if v := os.Getenv("HIDEAS_SSO_CLIENT_SECRET"); v != "" {
+		c.SSO.ClientSecret = v
+	}
+	if v := os.Getenv("HIDEAS_SSO_REDIRECT_URL"); v != "" {
+		c.SSO.RedirectURL = v
+	}
+	if v := os.Getenv("HIDEAS_SSO_SCOPES"); v != "" {
+		c.SSO.Scopes = v
+	}
 }

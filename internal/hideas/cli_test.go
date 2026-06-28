@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,17 +17,6 @@ import (
 	"time"
 )
 
-const testAuthorizedKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIOCC/YQBOu03vEyad+jYolX7kYuacb2ZHB0KUM3eLZHv han@Huge-Han.local\n"
-
-const testPrivateKey = `-----BEGIN OPENSSH PRIVATE KEY-----
-b3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW
-QyNTUxOQAAACDggv2EATrtN7xMmnfo2KJV+5GLmnG9mRwdClDN3i2R7wAAAJj1b8sw9W/L
-MAAAAAtzc2gtZWQyNTUxOQAAACDggv2EATrtN7xMmnfo2KJV+5GLmnG9mRwdClDN3i2R7w
-AAAEC3U2RzUJh6B+/hlxX1PC5RZUuu0YfwLhnfeWFWePoifOCC/YQBOu03vEyad+jYolX7
-kYuacb2ZHB0KUM3eLZHvAAAAEmhhbkBIdWdlLUhhbi5sb2NhbAECAw==
------END OPENSSH PRIVATE KEY-----
-`
-
 func runCLI(t *testing.T, args ...string) (string, string, int) {
 	t.Helper()
 	var out, err bytes.Buffer
@@ -34,22 +24,26 @@ func runCLI(t *testing.T, args ...string) (string, string, int) {
 	return out.String(), err.String(), code
 }
 
-func mustOK(t *testing.T, db string, args ...string) string {
+// newCLIServer starts an in-memory hideas HTTP server backed by a fresh
+// SQLite store. The static token "secret" is used to authorize CLI requests.
+func newCLIServer(t *testing.T) (*httptest.Server, *SQLiteStore) {
 	t.Helper()
-	full := append([]string{"--mode", "local", "--db", db}, args...)
+	store := newTestStore(t)
+	auth, err := newServerAuth(ServerAuthConfig{StaticToken: "secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := httptest.NewServer(NewHTTPHandler(store, auth, "/"))
+	t.Cleanup(server.Close)
+	return server, store
+}
+
+func mustOK(t *testing.T, server string, args ...string) string {
+	t.Helper()
+	full := append([]string{"--server", server, "--token", "secret"}, args...)
 	out, errOut, code := runCLI(t, full...)
 	if code != 0 {
 		t.Fatalf("command failed: %v\nstdout=%s\nstderr=%s", full, out, errOut)
-	}
-	return out
-}
-
-func mustRemoteOK(t *testing.T, server string, args ...string) string {
-	t.Helper()
-	full := append([]string{"--server", server}, args...)
-	out, errOut, code := runCLI(t, full...)
-	if code != 0 {
-		t.Fatalf("remote command failed: %v\nstdout=%s\nstderr=%s", full, out, errOut)
 	}
 	return out
 }
@@ -72,77 +66,73 @@ func fmtSscan(s string, a ...interface{}) (int, error) {
 	return fmt.Sscan(s, a...)
 }
 
-func TestLocalCLIAllCommands(t *testing.T) {
-	db := filepath.Join(t.TempDir(), "hideas.sqlite")
+func TestCLIAllCommands(t *testing.T) {
+	srv, _ := newCLIServer(t)
 
-	if out := mustOK(t, db, "init"); !strings.Contains(out, "initialized") {
-		t.Fatalf("init output: %s", out)
-	}
-
-	e1 := firstID(t, mustOK(t, db, "entity", "add", "李雷", "--type", "person"), "entity")
-	e2 := firstID(t, mustOK(t, db, "entity", "add", "李雷", "--type", "person"), "entity")
+	e1 := firstID(t, mustOK(t, srv.URL, "entity", "add", "李雷", "--type", "person"), "entity")
+	e2 := firstID(t, mustOK(t, srv.URL, "entity", "add", "李雷", "--type", "person"), "entity")
 	if e1 == e2 {
 		t.Fatal("duplicate entity names should still create distinct IDs")
 	}
 
-	if out := mustOK(t, db, "entity", "list", "--type", "person"); strings.Count(out, "李雷") != 2 {
+	if out := mustOK(t, srv.URL, "entity", "list", "--type", "person"); strings.Count(out, "李雷") != 2 {
 		t.Fatalf("entity list should include duplicate names: %s", out)
 	}
 
-	traceOut := mustOK(t, db, "add", "今天和李雷讨论 SQLite 记忆库", "--type", "thought", "--at", "2026-06-05", "--entity-id", strconvFormat(e1))
+	traceOut := mustOK(t, srv.URL, "add", "今天和李雷讨论 SQLite 记忆库", "--type", "thought", "--at", "2026-06-05", "--entity-id", strconvFormat(e1))
 	traceID := firstID(t, traceOut, "trace")
-	if out := mustOK(t, db, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-04-19"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
+	if out := mustOK(t, srv.URL, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-04-19"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
 		t.Fatalf("trace update output: %s", out)
 	}
-	if out := mustOK(t, db, "search", "SQLite", "--since", "2026-06-01", "--format", "json"); strings.Contains(out, strconvFormat(traceID)) {
+	if out := mustOK(t, srv.URL, "search", "SQLite", "--since", "2026-06-01", "--format", "json"); strings.Contains(out, strconvFormat(traceID)) {
 		t.Fatalf("updated trace happened_at should affect date filtering: %s", out)
 	}
-	if out := mustOK(t, db, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-06-05"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
+	if out := mustOK(t, srv.URL, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-06-05"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
 		t.Fatalf("trace update restore output: %s", out)
 	}
 
-	out, errOut, code := runCLI(t, "--mode", "local", "--db", db, "add", "这条会歧义", "--entity", "李雷")
+	out, errOut, code := runCLI(t, "--server", srv.URL, "--token", "secret", "add", "这条会歧义", "--entity", "李雷")
 	if code == 0 || !strings.Contains(errOut, "ambiguous entity name") {
 		t.Fatalf("expected ambiguous entity failure, code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
 
-	if out := mustOK(t, db, "search", "SQLite", "--entity-id", strconvFormat(e1), "--type", "thought", "--format", "json"); !strings.Contains(out, "SQLite") {
+	if out := mustOK(t, srv.URL, "search", "SQLite", "--entity-id", strconvFormat(e1), "--type", "thought", "--format", "json"); !strings.Contains(out, "SQLite") {
 		t.Fatalf("search json output: %s", out)
 	}
-	if out := mustOK(t, db, "add", "KeywordAlpha 记忆系统 命中测试", "--type", "thought"); !strings.Contains(out, "trace") {
+	if out := mustOK(t, srv.URL, "add", "KeywordAlpha 记忆系统 命中测试", "--type", "thought"); !strings.Contains(out, "trace") {
 		t.Fatalf("keyword trace add output: %s", out)
 	}
-	if out := mustOK(t, db, "search", "MissingPhrase 记忆系统", "--format", "json"); !strings.Contains(out, "KeywordAlpha") {
+	if out := mustOK(t, srv.URL, "search", "MissingPhrase 记忆系统", "--format", "json"); !strings.Contains(out, "KeywordAlpha") {
 		t.Fatalf("keyword search should match eligible token: %s", out)
 	}
-	if out := mustOK(t, db, "search", "MissingPhrase 记忆系统", "--literal", "--format", "json"); strings.Contains(out, "KeywordAlpha") {
+	if out := mustOK(t, srv.URL, "search", "MissingPhrase 记忆系统", "--literal", "--format", "json"); strings.Contains(out, "KeywordAlpha") {
 		t.Fatalf("literal search should not expand tokens: %s", out)
 	}
-	if out := mustOK(t, db, "search", "MissingPhrase SQLite", "--format", "json"); strings.Contains(out, "SQLite") {
+	if out := mustOK(t, srv.URL, "search", "MissingPhrase SQLite", "--format", "json"); strings.Contains(out, "SQLite") {
 		t.Fatalf("pure ascii token should not expand keyword search: %s", out)
 	}
-	if out := mustOK(t, db, "add", "TruncateTest short", "--type", "thought"); !strings.Contains(out, "trace") {
+	if out := mustOK(t, srv.URL, "add", "TruncateTest short", "--type", "thought"); !strings.Contains(out, "trace") {
 		t.Fatalf("short trace add output: %s", out)
 	}
-	if out := mustOK(t, db, "add", "TruncateTest "+strings.Repeat("abcdef", 20), "--type", "thought"); !strings.Contains(out, "trace") {
+	if out := mustOK(t, srv.URL, "add", "TruncateTest "+strings.Repeat("abcdef", 20), "--type", "thought"); !strings.Contains(out, "trace") {
 		t.Fatalf("long trace add output: %s", out)
 	}
 	today := time.Now().In(time.Local).Format("2006-01-02")
-	timeFilteredOut := mustOK(t, db, "add", "DateFilterTarget", "--type", "thought")
+	timeFilteredOut := mustOK(t, srv.URL, "add", "DateFilterTarget", "--type", "thought")
 	timeFilteredID := firstID(t, timeFilteredOut, "trace")
-	untilOut := mustOK(t, db, "search", "DateFilterTarget", "--until", today, "--format", "json")
+	untilOut := mustOK(t, srv.URL, "search", "DateFilterTarget", "--until", today, "--format", "json")
 	if !strings.Contains(untilOut, strconvFormat(timeFilteredID)) {
 		t.Fatalf("date-based until search should include today's trace: %s", untilOut)
 	}
-	recentOut := mustOK(t, db, "search", "DateFilterTarget", "--recent", "1h", "--format", "json")
+	recentOut := mustOK(t, srv.URL, "search", "DateFilterTarget", "--recent", "1h", "--format", "json")
 	if !strings.Contains(recentOut, strconvFormat(timeFilteredID)) {
 		t.Fatalf("recent window search should include today's trace: %s", recentOut)
 	}
-	out, errOut, code = runCLI(t, "--mode", "local", "--db", db, "search", "DateFilterTarget", "--recent", "24")
+	out, errOut, code = runCLI(t, "--server", srv.URL, "--token", "secret", "search", "DateFilterTarget", "--recent", "24")
 	if code == 0 || !strings.Contains(errOut, "invalid recent window") {
 		t.Fatalf("expected invalid recent window failure, code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
-	searchOut := mustOK(t, db, "search", "TruncateTest", "--limit", "1")
+	searchOut := mustOK(t, srv.URL, "search", "TruncateTest", "--limit", "1")
 	longContent := "TruncateTest " + strings.Repeat("abcdef", 20)
 	expectedSummary := summarizeText(longContent, 100)
 	if strings.Contains(searchOut, longContent) {
@@ -154,72 +144,69 @@ func TestLocalCLIAllCommands(t *testing.T) {
 	if !strings.Contains(searchOut, "more results available") {
 		t.Fatalf("search output should indicate truncation: %s", searchOut)
 	}
-	if out := mustOK(t, db, "show", "trace", strconvFormat(traceID)); !strings.Contains(out, "entity "+strconvFormat(e1)) {
+	if out := mustOK(t, srv.URL, "show", "trace", strconvFormat(traceID)); !strings.Contains(out, "entity "+strconvFormat(e1)) {
 		t.Fatalf("show trace output: %s", out)
 	}
 
-	relID := firstID(t, mustOK(t, db, "link", "entity", strconvFormat(e1), "entity", strconvFormat(e2), "--type", "related_to"), "relation")
-	if out := mustOK(t, db, "show", "relation", strconvFormat(relID)); !strings.Contains(out, "related_to") {
+	relID := firstID(t, mustOK(t, srv.URL, "link", "entity", strconvFormat(e1), "entity", strconvFormat(e2), "--type", "related_to"), "relation")
+	if out := mustOK(t, srv.URL, "show", "relation", strconvFormat(relID)); !strings.Contains(out, "related_to") {
 		t.Fatalf("show relation output: %s", out)
 	}
-	out, errOut, code = runCLI(t, "--mode", "local", "--db", db, "delete", "entity", strconvFormat(e1))
+	out, errOut, code = runCLI(t, "--server", srv.URL, "--token", "secret", "delete", "entity", strconvFormat(e1))
 	if code == 0 || !strings.Contains(errOut, "delete blocked") {
 		t.Fatalf("expected blocked entity delete, code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
-	if out := mustOK(t, db, "delete", "relation", strconvFormat(relID)); !strings.Contains(out, "deleted relation "+strconvFormat(relID)) {
+	if out := mustOK(t, srv.URL, "delete", "relation", strconvFormat(relID)); !strings.Contains(out, "deleted relation "+strconvFormat(relID)) {
 		t.Fatalf("delete relation output: %s", out)
 	}
-	out, errOut, code = runCLI(t, "--mode", "local", "--db", db, "show", "relation", strconvFormat(relID))
+	out, errOut, code = runCLI(t, "--server", srv.URL, "--token", "secret", "show", "relation", strconvFormat(relID))
 	if code == 0 || !strings.Contains(errOut, "not found") {
 		t.Fatalf("expected deleted relation not found, code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
 
-	profileID := firstID(t, mustOK(t, db, "profile", "set", strconvFormat(e1), "前同事，做后端"), "profile")
+	profileID := firstID(t, mustOK(t, srv.URL, "profile", "set", strconvFormat(e1), "前同事，做后端"), "profile")
 	if profileID == 0 {
 		t.Fatalf("profile set output: %s", out)
 	}
-	if out := mustOK(t, db, "profile", "show", strconvFormat(e1)); !strings.Contains(out, "前同事") {
+	if out := mustOK(t, srv.URL, "profile", "show", strconvFormat(e1)); !strings.Contains(out, "前同事") {
 		t.Fatalf("profile show output: %s", out)
 	}
-	if out := mustOK(t, db, "entity", "show", strconvFormat(e1)); !strings.Contains(out, "profile: 前同事") {
+	if out := mustOK(t, srv.URL, "entity", "show", strconvFormat(e1)); !strings.Contains(out, "profile: 前同事") {
 		t.Fatalf("entity show output: %s", out)
 	}
-	out, errOut, code = runCLI(t, "--mode", "local", "--db", db, "delete", "trace", strconvFormat(profileID))
+	out, errOut, code = runCLI(t, "--server", srv.URL, "--token", "secret", "delete", "trace", strconvFormat(profileID))
 	if code == 0 || !strings.Contains(errOut, "delete blocked") {
 		t.Fatalf("expected blocked profile trace delete, code=%d stdout=%s stderr=%s", code, out, errOut)
 	}
-	if out := mustOK(t, db, "delete", "trace", strconvFormat(profileID), "--cascade"); !strings.Contains(out, "profiles_cleared=1") {
+	if out := mustOK(t, srv.URL, "delete", "trace", strconvFormat(profileID), "--cascade"); !strings.Contains(out, "profiles_cleared=1") {
 		t.Fatalf("delete profile trace cascade output: %s", out)
 	}
 
-	if out := mustOK(t, db, "entity", "rename", strconvFormat(e2), "李雷-设计师"); !strings.Contains(out, "renamed") {
+	if out := mustOK(t, srv.URL, "entity", "rename", strconvFormat(e2), "李雷-设计师"); !strings.Contains(out, "renamed") {
 		t.Fatalf("rename output: %s", out)
 	}
-	if out := mustOK(t, db, "delete", "entity", strconvFormat(e1), "--cascade"); !strings.Contains(out, "relations_deleted=") {
+	if out := mustOK(t, srv.URL, "delete", "entity", strconvFormat(e1), "--cascade"); !strings.Contains(out, "relations_deleted=") {
 		t.Fatalf("delete entity cascade output: %s", out)
 	}
 
-	if out := mustOK(t, db, "type", "add", "trace", "decision"); !strings.Contains(out, "type") {
+	if out := mustOK(t, srv.URL, "type", "add", "trace", "decision"); !strings.Contains(out, "type") {
 		t.Fatalf("type add output: %s", out)
 	}
-	if out := mustOK(t, db, "type", "list"); !strings.Contains(out, "decision") {
+	if out := mustOK(t, srv.URL, "type", "list"); !strings.Contains(out, "decision") {
 		t.Fatalf("type list output: %s", out)
 	}
 
-	if out := mustOK(t, db, "db", "path"); !strings.Contains(out, db) {
-		t.Fatalf("db path output: %s", out)
-	}
-	if out := mustOK(t, db, "db", "stats"); !strings.Contains(out, "entities=") || !strings.Contains(out, "traces=") {
+	if out := mustOK(t, srv.URL, "db", "stats"); !strings.Contains(out, "entities=") || !strings.Contains(out, "traces=") {
 		t.Fatalf("db stats output: %s", out)
 	}
-	if out := mustOK(t, db, "db", "check"); !strings.Contains(out, "ok") {
+	if out := mustOK(t, srv.URL, "db", "check"); !strings.Contains(out, "ok") {
 		t.Fatalf("db check output: %s", out)
 	}
 
-	if out := mustOK(t, db, "export", "--format", "json"); !strings.Contains(out, `"entities"`) || !strings.Contains(out, `"traces"`) {
+	if out := mustOK(t, srv.URL, "export", "--format", "json"); !strings.Contains(out, `"entities"`) || !strings.Contains(out, `"traces"`) {
 		t.Fatalf("export json output: %s", out)
 	}
-	if out := mustOK(t, db, "export", "--format", "markdown"); !strings.Contains(out, "# hideas export") {
+	if out := mustOK(t, srv.URL, "export", "--format", "markdown"); !strings.Contains(out, "# hideas export") {
 		t.Fatalf("export markdown output: %s", out)
 	}
 }
@@ -314,186 +301,53 @@ func TestServerModeHTTPAPI(t *testing.T) {
 	}
 }
 
-func TestRemoteCLIAllCommands(t *testing.T) {
-	store := newTestStore(t)
-	server := httptest.NewServer(NewHTTPHandler(store, nil, "/"))
-	defer server.Close()
-
-	e1 := firstID(t, mustRemoteOK(t, server.URL, "entity", "add", "Remote 李雷", "--type", "person"), "entity")
-	e2 := firstID(t, mustRemoteOK(t, server.URL, "entity", "add", "远端项目", "--type", "project"), "entity")
-	traceID := firstID(t, mustRemoteOK(t, server.URL, "add", "远端 SQLite 记录", "--type", "thought", "--entity-id", strconvFormat(e1)), "trace")
-	if out := mustRemoteOK(t, server.URL, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-04-19"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
-		t.Fatalf("remote trace update output: %s", out)
+func TestCLIRequiresServer(t *testing.T) {
+	t.Setenv("HIDEAS_SERVER", "")
+	t.Setenv("HIDEAS_TOKEN", "")
+	out, errOut, code := runCLI(t, "--config", filepath.Join(t.TempDir(), "missing"), "--credentials", filepath.Join(t.TempDir(), "creds.json"), "entity", "list")
+	if code == 0 {
+		t.Fatalf("expected failure without server, stdout=%s stderr=%s", out, errOut)
 	}
-	if out := mustRemoteOK(t, server.URL, "trace", "update", strconvFormat(traceID), "--happened-at", "2026-06-05"); !strings.Contains(out, "trace "+strconvFormat(traceID)+" updated") {
-		t.Fatalf("remote trace update restore output: %s", out)
-	}
-
-	if out := mustRemoteOK(t, server.URL, "search", "SQLite", "--entity-id", strconvFormat(e1)); !strings.Contains(out, "远端 SQLite") {
-		t.Fatalf("remote search output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "add", "RemoteKeyword 远端测试", "--type", "thought"); !strings.Contains(out, "trace") {
-		t.Fatalf("remote keyword trace add output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "search", "MissingPhrase 远端测试", "--format", "json"); !strings.Contains(out, "RemoteKeyword") {
-		t.Fatalf("remote keyword search should match eligible token: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "search", "MissingPhrase 远端测试", "--literal", "--format", "json"); strings.Contains(out, "RemoteKeyword") {
-		t.Fatalf("remote literal search should not expand tokens: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "show", "trace", strconvFormat(traceID)); !strings.Contains(out, "Remote 李雷") {
-		t.Fatalf("remote show trace output: %s", out)
-	}
-	relID := firstID(t, mustRemoteOK(t, server.URL, "link", "entity", strconvFormat(e1), "entity", strconvFormat(e2), "--type", "related_to"), "relation")
-	if out := mustRemoteOK(t, server.URL, "show", "relation", strconvFormat(relID)); !strings.Contains(out, "related_to") {
-		t.Fatalf("remote show relation output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "delete", "relation", strconvFormat(relID)); !strings.Contains(out, "deleted relation "+strconvFormat(relID)) {
-		t.Fatalf("remote delete relation output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "profile", "set", strconvFormat(e1), "远端 profile"); !strings.Contains(out, "profile") {
-		t.Fatalf("remote profile set output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "profile", "show", strconvFormat(e1)); !strings.Contains(out, "远端 profile") {
-		t.Fatalf("remote profile show output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "entity", "list"); !strings.Contains(out, "Remote 李雷") {
-		t.Fatalf("remote entity list output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "entity", "rename", strconvFormat(e2), "远端项目2"); !strings.Contains(out, "renamed") {
-		t.Fatalf("remote rename output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "type", "add", "relation", "inspired_by"); !strings.Contains(out, "type") {
-		t.Fatalf("remote type add output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "type", "list"); !strings.Contains(out, "inspired_by") {
-		t.Fatalf("remote type list output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "db", "stats"); !strings.Contains(out, "entities=") {
-		t.Fatalf("remote stats output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "db", "check"); !strings.Contains(out, "ok") {
-		t.Fatalf("remote check output: %s", out)
-	}
-	if out := mustRemoteOK(t, server.URL, "export", "--format", "json"); !strings.Contains(out, "Remote 李雷") {
-		t.Fatalf("remote export output: %s", out)
-	}
-	out, errOut, code := runCLI(t, "--server", server.URL, "delete", "entity", strconvFormat(e1))
-	if code == 0 || !strings.Contains(errOut, "delete blocked") {
-		t.Fatalf("expected remote blocked delete, code=%d stdout=%s stderr=%s", code, out, errOut)
-	}
-	if out := mustRemoteOK(t, server.URL, "delete", "entity", strconvFormat(e1), "--cascade"); !strings.Contains(out, "deleted entity "+strconvFormat(e1)) {
-		t.Fatalf("remote delete entity cascade output: %s", out)
+	if !strings.Contains(errOut, "server is required") {
+		t.Fatalf("unexpected error: %s", errOut)
 	}
 }
 
-func TestRemoteCLIUsesConfigFile(t *testing.T) {
-	store := newTestStore(t)
-	server := httptest.NewServer(NewHTTPHandler(store, nil, "/"))
-	defer server.Close()
+func TestCLIRequiresLogin(t *testing.T) {
+	srv, _ := newCLIServer(t)
+	out, errOut, code := runCLI(t, "--server", srv.URL, "--credentials", filepath.Join(t.TempDir(), "creds.json"), "entity", "list")
+	if code == 0 {
+		t.Fatalf("expected failure without token, stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(errOut, "not logged in") {
+		t.Fatalf("unexpected error: %s", errOut)
+	}
+}
 
-	configPath := filepath.Join(t.TempDir(), "config")
-	if err := os.WriteFile(configPath, []byte("server = \""+server.URL+"\"\n"), 0600); err != nil {
+func TestCLIUsesConfigFile(t *testing.T) {
+	srv, _ := newCLIServer(t)
+
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "config")
+	if err := os.WriteFile(configPath, []byte("server = \""+srv.URL+"\"\ntoken = \"secret\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 
 	out, errOut, code := runCLI(t, "--config", configPath, "entity", "add", "Config Server", "--type", "source")
 	if code != 0 {
-		t.Fatalf("config remote command failed stdout=%s stderr=%s", out, errOut)
+		t.Fatalf("config command failed stdout=%s stderr=%s", out, errOut)
 	}
 	if !strings.Contains(out, "entity") {
-		t.Fatalf("config remote add output: %s", out)
+		t.Fatalf("config add output: %s", out)
 	}
-	if out := mustRemoteOK(t, server.URL, "entity", "list"); !strings.Contains(out, "Config Server") {
-		t.Fatalf("config remote did not use server: %s", out)
-	}
-}
-
-func TestRemoteCLILoginAndAuthStatus(t *testing.T) {
-	store := newTestStore(t)
-	auth := mustSSHAuth(t)
-	server := httptest.NewServer(NewHTTPHandler(store, auth, "/"))
-	defer server.Close()
-
-	dir := t.TempDir()
-	identityPath := filepath.Join(dir, "id_ed25519")
-	credentialsPath := filepath.Join(dir, "credentials.json")
-	configPath := filepath.Join(dir, "config")
-	if err := os.WriteFile(identityPath, []byte(testPrivateKey), 0600); err != nil {
-		t.Fatal(err)
+	if out := mustOK(t, srv.URL, "entity", "list"); !strings.Contains(out, "Config Server") {
+		t.Fatalf("config did not target server: %s", out)
 	}
 
-	out, errOut, code := runCLI(t, "--config", configPath, "--credentials", credentialsPath, "login", "--server", server.URL, "--identity", identityPath)
-	if code != 0 {
-		t.Fatalf("login failed stdout=%s stderr=%s", out, errOut)
-	}
-	if !strings.Contains(out, "logged in") {
-		t.Fatalf("unexpected login output: %s", out)
-	}
-
-	out, errOut, code = runCLI(t, "--config", configPath, "status")
-	if code != 0 {
-		t.Fatalf("status failed stdout=%s stderr=%s", out, errOut)
-	}
-	if !strings.Contains(out, "mode: remote-client") || !strings.Contains(out, "server prefix: "+normalizeServerKey(server.URL)) || !strings.Contains(out, "login: logged in") {
-		t.Fatalf("unexpected status output: %s", out)
-	}
-
-	if out, errOut, code = runCLI(t, "--config", configPath, "entity", "add", "SSH Login", "--type", "person"); code != 0 || !strings.Contains(out, "entity") {
-		t.Fatalf("remote add after login failed stdout=%s stderr=%s code=%d", out, errOut, code)
-	}
-
-	out, errOut, code = runCLI(t, "--config", configPath, "auth", "status")
-	if code != 0 {
-		t.Fatalf("auth status failed stdout=%s stderr=%s", out, errOut)
-	}
-	if !strings.Contains(out, "logged in") {
-		t.Fatalf("unexpected auth status output: %s", out)
-	}
-
-	out, errOut, code = runCLI(t, "--config", configPath, "logout")
-	if code != 0 {
-		t.Fatalf("logout failed stdout=%s stderr=%s", out, errOut)
-	}
-	if !strings.Contains(out, "logged out") {
-		t.Fatalf("unexpected logout output: %s", out)
-	}
-
-	out, errOut, code = runCLI(t, "--config", configPath, "status")
-	if code != 0 {
-		t.Fatalf("status after logout failed stdout=%s stderr=%s", out, errOut)
-	}
-	if !strings.Contains(out, "mode: local") || !strings.Contains(out, "server prefix: (none)") || !strings.Contains(out, "login: not logged in") {
-		t.Fatalf("unexpected status output after logout: %s", out)
-	}
-
-	dbPath := filepath.Join(dir, "local.sqlite")
-	if out, errOut, code = runCLI(t, "--config", configPath, "--credentials", credentialsPath, "--db", dbPath, "init"); code != 0 {
-		t.Fatalf("init after logout failed stdout=%s stderr=%s", out, errOut)
-	}
-	if out, errOut, code = runCLI(t, "--config", configPath, "--credentials", credentialsPath, "--db", dbPath, "entity", "add", "SSH Login", "--type", "person"); code != 0 || !strings.Contains(out, "entity") {
-		t.Fatalf("local add after logout failed stdout=%s stderr=%s code=%d", out, errOut, code)
-	}
-}
-
-func TestRemoteCLIUsesDefaultModeConfig(t *testing.T) {
-	store := newTestStore(t)
-	server := httptest.NewServer(NewHTTPHandler(store, nil, "/"))
-	defer server.Close()
-
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "config")
-	if err := os.WriteFile(configPath, []byte("mode = \"remote-client\"\nserver = \""+server.URL+"\"\n"), 0600); err != nil {
-		t.Fatal(err)
-	}
-
-	if out, errOut, code := runCLI(t, "--config", configPath, "entity", "add", "Config Remote", "--type", "source"); code != 0 {
-		t.Fatalf("remote command with default mode config failed stdout=%s stderr=%s", out, errOut)
-	}
 	if out, errOut, code := runCLI(t, "--config", configPath, "status"); code != 0 {
-		t.Fatalf("status with default mode config failed stdout=%s stderr=%s", out, errOut)
-	} else if !strings.Contains(out, "mode: remote-client") || !strings.Contains(out, "server prefix: "+normalizeServerKey(server.URL)) {
-		t.Fatalf("unexpected status with default mode config: %s", out)
+		t.Fatalf("status failed stdout=%s stderr=%s", out, errOut)
+	} else if !strings.Contains(out, "server: "+normalizeServerKey(srv.URL)) || !strings.Contains(out, "static token") {
+		t.Fatalf("unexpected status: %s", out)
 	}
 }
 
@@ -522,13 +376,10 @@ func TestVersionCommands(t *testing.T) {
 		t.Fatalf("unexpected help output: %s", out)
 	}
 
-	store := newTestStore(t)
-	server := httptest.NewServer(NewHTTPHandler(store, nil, "/"))
-	defer server.Close()
-
+	srv, _ := newCLIServer(t)
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "config")
-	if err := os.WriteFile(configPath, []byte("mode = \"remote-client\"\nserver = \""+server.URL+"\"\n"), 0600); err != nil {
+	if err := os.WriteFile(configPath, []byte("server = \""+srv.URL+"\"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
 	out, errOut, code = runCLI(t, "--config", configPath, "version")
@@ -587,6 +438,262 @@ func TestCLIHelp(t *testing.T) {
 	}
 }
 
+// mockOIDCServer implements just enough of an OIDC provider for SSO login
+// tests. Calling the authorize endpoint immediately redirects back to the
+// hideas callback with a deterministic code, mimicking a user who consents
+// without interaction.
+type mockOIDCServer struct {
+	server   *httptest.Server
+	clientID string
+	secret   string
+	t        *testing.T
+}
+
+func newMockOIDC(t *testing.T, clientID, secret string) *mockOIDCServer {
+	t.Helper()
+	m := &mockOIDCServer{clientID: clientID, secret: secret, t: t}
+	mux := http.NewServeMux()
+	var baseURL string
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{
+			"issuer":                 baseURL,
+			"authorization_endpoint": baseURL + "/authorize",
+			"token_endpoint":         baseURL + "/token",
+			"userinfo_endpoint":      baseURL + "/userinfo",
+		})
+	})
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		redirect := q.Get("redirect_uri")
+		state := q.Get("state")
+		u, err := url.Parse(redirect)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		v := u.Query()
+		v.Set("state", state)
+		v.Set("code", "test-code")
+		u.RawQuery = v.Encode()
+		http.Redirect(w, r, u.String(), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseForm(); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		if r.PostForm.Get("client_id") != clientID || r.PostForm.Get("client_secret") != secret {
+			http.Error(w, "bad client", http.StatusUnauthorized)
+			return
+		}
+		if r.PostForm.Get("code") != "test-code" {
+			http.Error(w, "bad code", http.StatusBadRequest)
+			return
+		}
+		if r.PostForm.Get("code_verifier") == "" {
+			http.Error(w, "missing code_verifier", http.StatusBadRequest)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{
+			"access_token": "access-token-for-alice",
+			"token_type":   "Bearer",
+			"expires_in":   1800,
+		})
+	})
+	mux.HandleFunc("/userinfo", func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer access-token-for-alice" {
+			http.Error(w, "bad token", http.StatusUnauthorized)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]string{"sub": "alice"})
+	})
+	m.server = httptest.NewServer(mux)
+	baseURL = m.server.URL
+	t.Cleanup(m.server.Close)
+	return m
+}
+
+// newSSOHideasServer returns a hideas HTTP server wired to a mock OIDC
+// provider. The browser-side redirect is performed by the test directly,
+// using the returned hideas server URL as both base and redirect target.
+func newSSOHideasServer(t *testing.T) (*httptest.Server, *mockOIDCServer) {
+	t.Helper()
+	store := newTestStore(t)
+
+	// We need the final hideas server URL to set redirect_uri before
+	// constructing the handler, so use an httptest.Server placeholder.
+	srv := httptest.NewUnstartedServer(nil)
+	srv.Start()
+	t.Cleanup(srv.Close)
+	redirectURL := srv.URL + "/api/v1/auth/callback"
+
+	mock := newMockOIDC(t, "hideas-client", "hideas-secret")
+	auth, err := newServerAuth(ServerAuthConfig{
+		SSO: SSOConfig{
+			Issuer:       mock.server.URL,
+			ClientID:     "hideas-client",
+			ClientSecret: "hideas-secret",
+			RedirectURL:  redirectURL,
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.Config.Handler = NewHTTPHandler(store, auth, "/")
+	return srv, mock
+}
+
+func TestSSOLoginWait(t *testing.T) {
+	hideasSrv, _ := newSSOHideasServer(t)
+
+	dir := t.TempDir()
+	credPath := filepath.Join(dir, "credentials.json")
+	configPath := filepath.Join(dir, "config")
+
+	// Run hideas login --wait in the background; once the CLI surfaces the
+	// authorize URL by writing the pending session and we walk that URL via
+	// the SSO mock, the wait loop should observe ready and exit 0.
+	type result struct {
+		out, err string
+		code     int
+	}
+	done := make(chan result, 1)
+	var stdoutBuf, stderrBuf bytes.Buffer
+	go func() {
+		code := Run([]string{
+			"--config", configPath,
+			"--credentials", credPath,
+			"login",
+			"--server", hideasSrv.URL,
+			"--wait",
+			"--timeout", "10s",
+		}, &stdoutBuf, &stderrBuf)
+		done <- result{stdoutBuf.String(), stderrBuf.String(), code}
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	var authorizeURL string
+	for time.Now().Before(deadline) {
+		time.Sleep(50 * time.Millisecond)
+		out := stdoutBuf.String()
+		idx := strings.Index(out, "http")
+		if idx >= 0 {
+			end := strings.IndexByte(out[idx:], '\n')
+			if end > 0 {
+				authorizeURL = strings.TrimSpace(out[idx : idx+end])
+				break
+			}
+		}
+	}
+	if authorizeURL == "" {
+		t.Fatal("CLI never printed an authorize URL")
+	}
+	// Walk the authorize URL to complete the SSO flow for the CLI's session.
+	if _, err := http.DefaultClient.Get(authorizeURL); err != nil {
+		t.Fatalf("follow authorize url: %v", err)
+	}
+	res := <-done
+	if res.code != 0 {
+		t.Fatalf("login --wait failed stdout=%s stderr=%s", res.out, res.err)
+	}
+	if !strings.Contains(res.out, "logged in to") {
+		t.Fatalf("unexpected stdout: %s", res.out)
+	}
+	entry, ok, err := credentialForServer(credPath, hideasSrv.URL)
+	if err != nil || !ok || entry.Token == "" {
+		t.Fatalf("token not stored: ok=%v entry=%+v err=%v", ok, entry, err)
+	}
+}
+
+func TestSSOLoginAutoResumePoll(t *testing.T) {
+	hideasSrv, _ := newSSOHideasServer(t)
+	dir := t.TempDir()
+	credPath := filepath.Join(dir, "credentials.json")
+	configPath := filepath.Join(dir, "config")
+
+	// Start a login session directly to obtain a session ID and authorize URL.
+	client := NewHTTPStore(hideasSrv.URL, "")
+	start, err := client.AuthLoginStart()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := storeCredential(credPath, hideasSrv.URL, CredentialEntry{PendingSessionID: start.SessionID}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("server = \""+hideasSrv.URL+"\"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	// Simulate the user completing the browser-side authorization.
+	if _, err := http.DefaultClient.Get(start.AuthorizeURL); err != nil {
+		t.Fatal(err)
+	}
+
+	// Running any command should opportunistically finish the login.
+	out, errOut, code := runCLI(t,
+		"--config", configPath,
+		"--credentials", credPath,
+		"db", "stats",
+	)
+	if code != 0 {
+		t.Fatalf("command failed stdout=%s stderr=%s", out, errOut)
+	}
+	if !strings.Contains(errOut, "login completed") {
+		t.Fatalf("expected login completion notice, stderr=%s", errOut)
+	}
+	if !strings.Contains(out, "entities=") {
+		t.Fatalf("unexpected db stats output: %s", out)
+	}
+
+	entry, ok, err := credentialForServer(credPath, hideasSrv.URL)
+	if err != nil || !ok || entry.Token == "" || entry.PendingSessionID != "" {
+		t.Fatalf("credentials should be promoted to a token: ok=%v entry=%+v err=%v", ok, entry, err)
+	}
+}
+
+func TestSSOLoginCallbackErrors(t *testing.T) {
+	hideasSrv, _ := newSSOHideasServer(t)
+
+	// Unknown state should produce a 400 HTML page.
+	resp, err := http.Get(hideasSrv.URL + "/api/v1/auth/callback?state=bogus&code=test-code")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, _ := io.ReadAll(resp.Body)
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", resp.StatusCode, body)
+	}
+	if !strings.Contains(string(body), "授权失败") {
+		t.Fatalf("expected failure HTML, got %s", body)
+	}
+}
+
+func TestValidateServerSSOConfig(t *testing.T) {
+	good := SSOConfig{
+		Issuer: "https://x", ClientID: "id", ClientSecret: "s",
+		RedirectURL: "https://example.com/hideas/api/v1/auth/callback",
+	}
+	if err := validateServerSSOConfig(good, "/hideas/"); err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	bad := good
+	bad.RedirectURL = "https://example.com/wrong"
+	if err := validateServerSSOConfig(bad, "/hideas/"); err == nil {
+		t.Fatal("expected error for mismatched redirect_url path")
+	}
+	if err := validateServerSSOConfig(SSOConfig{}, "/"); err != nil {
+		t.Fatalf("empty config (static-token-only) should be allowed: %v", err)
+	}
+	partial := SSOConfig{Issuer: "https://x"}
+	if err := validateServerSSOConfig(partial, "/"); err == nil {
+		t.Fatal("partial config should fail")
+	}
+}
+
 func newTestStore(t *testing.T) *SQLiteStore {
 	t.Helper()
 	store, err := OpenSQLite(filepath.Join(t.TempDir(), "hideas.sqlite"))
@@ -598,19 +705,6 @@ func newTestStore(t *testing.T) *SQLiteStore {
 		t.Fatal(err)
 	}
 	return store
-}
-
-func mustSSHAuth(t *testing.T) *serverAuth {
-	t.Helper()
-	path := filepath.Join(t.TempDir(), "authorized_keys")
-	if err := os.WriteFile(path, []byte(testAuthorizedKey), 0600); err != nil {
-		t.Fatal(err)
-	}
-	auth, err := newServerAuth(ServerAuthConfig{AuthorizedKeysPath: path})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return auth
 }
 
 func apiDo[T any](t *testing.T, base, token, method, path string, body interface{}) T {

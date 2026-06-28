@@ -2,13 +2,38 @@
 
 This reference gives practical ways to use Hideas from an agent.
 
-## CLI Basics
+The `hideas` CLI is always a client. Before running data commands, ensure a server is configured and a token is available.
 
-Initialize the local database:
+## Login
+
+Check the current auth state:
 
 ```bash
-hideas init
+hideas auth status
+hideas status
 ```
+
+Log in (non-blocking; the CLI prints an authorization URL and exits):
+
+```bash
+hideas login --server https://example.com/hideas/
+```
+
+Log in and block until the browser flow completes:
+
+```bash
+hideas login --wait --timeout 10m
+```
+
+After login, the issued token is stored in `~/.hideas/credentials.json` and the active server is written to `~/.hideas/config`.
+
+Log out:
+
+```bash
+hideas logout
+```
+
+## CLI Basics
 
 Add a trace:
 
@@ -42,7 +67,7 @@ hideas search "Skill Q2 规划" --literal
 hideas search "SQLite" --format json
 ```
 
-Search output in text mode should show concise summaries, not full trace bodies. Search responses include `traces_has_more` and `entities_has_more` so clients can tell when the result set was truncated by `--limit`.
+Search output in text mode shows concise summaries, not full trace bodies. Search responses include `traces_has_more` and `entities_has_more` so clients can tell when the result set was truncated by `--limit`.
 
 By default, search keeps the full query as a literal phrase and also expands eligible space-separated keyword tokens. Tokens are eligible only when they contain at least one non-ASCII character and are at least two runes long, so pure English, pure numeric, and English-number tokens are not expanded. Use `--literal` for exact phrase search only.
 
@@ -65,10 +90,9 @@ Version:
 ```bash
 hideas --version
 hideas version
-hideas version --server https://example.com/hideas/
 ```
 
-`hideas --version` prints the local binary version and build time. In remote client mode, `hideas version` queries the connected server's version endpoint.
+`hideas --version` prints the local binary version and build time. `hideas version` queries the configured server's version endpoint, falling back to the local binary version if the server is unreachable.
 
 Show context:
 
@@ -116,7 +140,6 @@ Deletion is conservative by default. If Hideas reports `delete blocked`, inspect
 Inspect database:
 
 ```bash
-hideas db path
 hideas db stats
 hideas db check
 ```
@@ -128,36 +151,6 @@ hideas export --format json
 hideas export --format markdown
 ```
 
-## Remote Authentication
-
-When using a remote Hideas server, prefer the CLI login flow instead of passing bearer tokens around manually.
-
-Check whether the client is already authenticated:
-
-```bash
-hideas auth status --server https://example.com/hideas/
-```
-
-If not logged in, authenticate with an SSH private key:
-
-```bash
-hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
-```
-
-Log out and remove the stored token:
-
-```bash
-hideas logout --server https://example.com/hideas/
-```
-
-After login succeeds, normal CLI commands can use the remote server directly:
-
-```bash
-hideas status
-hideas search "SQLite"
-hideas add "新的记忆" --type thought
-```
-
 ## Config
 
 Default config path:
@@ -166,23 +159,23 @@ Default config path:
 $HOME/.hideas/config
 ```
 
-Supported keys:
+Client-side keys (TOML):
 
-```text
-mode = "remote-client"
-db = "/path/to/hideas.sqlite"
-server = "https://example.com/hideas/"
-identity = "~/.ssh/id_ed25519"
+```toml
+server      = "https://example.com/hideas/"
+token       = "..."                       # optional, overrides credentials.json
 credentials = "~/.hideas/credentials.json"
 ```
 
 Precedence:
 
 ```text
-CLI option > environment variable > config file > built-in default
+CLI option > environment variable > config file
 ```
 
-Config file example:
+Environment variables: `HIDEAS_SERVER`, `HIDEAS_TOKEN`, `HIDEAS_CONFIG`, `HIDEAS_CREDENTIALS`.
+
+Use an alternate config path:
 
 ```bash
 hideas --config /path/to/config search "SQLite"

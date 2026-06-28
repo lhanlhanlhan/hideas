@@ -35,38 +35,30 @@ https://example.com/hideas/api/v1
 Hideas supports two authentication modes for remote access:
 
 1. Static bearer token
-2. SSH challenge login that issues a short-lived bearer token
+2. SSO Authorization Code (OIDC) login that issues a short-lived bearer token
 
-If the server is started with a static token:
-
-```bash
-hideas serve --token TOKEN
-```
-
-clients must send:
+If the server is configured with a static token, clients must send:
 
 ```http
 Authorization: Bearer TOKEN
 ```
 
-If the server is started with authorized SSH public keys:
+If the server is configured with an SSO provider (issuer, client_id, client_secret, redirect_url), clients obtain a bearer token through:
 
-```bash
-hideas serve --authorized-keys /path/to/authorized_keys
-```
+1. `POST /auth/login/start`
+2. The user opens the returned `authorize_url` in a browser and completes SSO sign-in
+3. The SSO redirects back to `GET /auth/callback` on the server, which finalizes the session
+4. `POST /auth/login/poll` returns the issued hideas token once the session is ready
 
-clients may obtain a bearer token through:
-
-1. `POST /auth/challenge`
-2. `POST /auth/login`
-
-and then use:
+Subsequent requests use:
 
 ```http
 Authorization: Bearer TOKEN
 ```
 
-If no token or authorized key file is configured, authentication is not required.
+A configured SSO requires all four fields; partial configuration is rejected on startup. `redirect_url` must end with `<base_path>/api/v1/auth/callback`.
+
+If neither a static token nor an SSO is configured, authentication is not required (intended for local-only development).
 
 ## Version
 
@@ -262,9 +254,9 @@ curl -fsSL https://example.com/hideas/api/v1/health
 
 ## Authentication Endpoints
 
-### POST /auth/challenge
+### POST /auth/login/start
 
-Issues a one-time challenge for SSH login.
+Starts a new SSO login session and returns an authorization URL that the user must open in a browser.
 
 Request:
 
@@ -278,23 +270,36 @@ Response data:
 
 ```json
 {
-  "challenge_id": "7QF2xS2Wm9c9JY6R1G6d3s8r8Q6N4Y7A",
-  "challenge": "1Yw4XgM4z3+f3P6jv5c+f6k7x7n0y+v8q8nL2jR5z3s=",
+  "session_id": "7QF2xS2Wm9c9JY6R1G6d3s8r8Q6N4Y7A",
+  "authorize_url": "https://sso.example.com/oauth/authorize/?...",
   "expires_at": 1710000000000
 }
 ```
 
-### POST /auth/login
+`session_id` is opaque and must be passed back to `/auth/login/poll`. `expires_at` is the deadline by which the user must complete browser-side authorization.
 
-Verifies an SSH signature over the challenge and issues a bearer token.
+### GET /auth/callback
+
+Public endpoint hit by the SSO redirect. Browsers, not API clients, hit this endpoint, so it returns an HTML page rather than the JSON envelope.
+
+Query parameters:
+
+```text
+state  state value returned by the SSO
+code   authorization code returned by the SSO
+```
+
+On success the server exchanges the code for an access token, fetches the SSO subject through the userinfo endpoint, mints a hideas session token, and renders a small confirmation HTML page. Errors render a `400 Bad Request` HTML page.
+
+### POST /auth/login/poll
+
+Polls a login session and returns the issued hideas bearer token once browser-side authorization is complete.
 
 Request:
 
 ```json
 {
-  "challenge_id": "7QF2xS2Wm9c9JY6R1G6d3s8r8Q6N4Y7A",
-  "public_key": "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAI...",
-  "signature": "BASE64_SSH_SIGNATURE"
+  "session_id": "7QF2xS2Wm9c9JY6R1G6d3s8r8Q6N4Y7A"
 }
 ```
 
@@ -302,7 +307,31 @@ Response data:
 
 ```json
 {
-  "token": "eyJhbGciOi...",
+  "status": "ready",
+  "token": "...",
+  "expires_at": 1710000000000
+}
+```
+
+`status` is one of:
+
+```text
+pending   browser-side authorization not yet complete
+ready     authorization complete; token returned
+expired   session expired or already consumed
+```
+
+A `ready` response delivers the token exactly once. Subsequent polls of the same session return `expired`.
+
+### GET /auth/me
+
+Returns the subject and token expiry bound to the current bearer token. Requires `Authorization: Bearer <token>`. For static tokens the subject is empty.
+
+Response data:
+
+```json
+{
+  "subject": "alice",
   "expires_at": 1710000000000
 }
 ```

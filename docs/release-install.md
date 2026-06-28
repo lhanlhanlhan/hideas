@@ -48,3 +48,36 @@ curl -fsSL https://raw.githubusercontent.com/lhanlhanlhan/hideas/main/scripts/in
 
 The installer detects the local OS and architecture, downloads the matching release asset, verifies `SHA256SUMS` when available, and installs the `hideas` binary.
 
+## Server Deployment
+
+The repository ships a `Dockerfile` and an interactive helper for deploying the
+server side via Docker Compose:
+
+```bash
+./scripts/deploy.sh             # writes to ./deploy/
+./scripts/deploy.sh /opt/hideas # custom deployment directory
+```
+
+The script asks for the public base URL, base path, host/port, SSO issuer,
+SSO `client_id` / `client_secret`, scopes, and whether to generate a static
+bearer token. It then writes `<dir>/config` and `<dir>/docker-compose.yml`,
+builds the Docker image (`hideas:latest` by default; override with
+`HIDEAS_IMAGE`), and optionally starts the stack with `docker compose up -d`.
+
+The `Dockerfile` consumes the same prebuilt release tarball that
+`scripts/install.sh` does. It does not build hideas from source. When prompted
+by `deploy.sh` you can pick the release tag (default `latest`) and repo
+(default `lhanlhanlhan/hideas`). The runtime base is `debian:bookworm-slim`
+because the release binary is built with cgo against glibc.
+
+Generated artifacts:
+
+```text
+<dir>/config            # TOML config consumed by `hideas serve`
+<dir>/docker-compose.yml
+<dir>/data/             # persistent SQLite volume
+```
+
+The script prints the exact `redirect_url` you must register with your SSO
+administrator. Re-running the script overwrites the config file with new
+answers (the `data/` directory is preserved).

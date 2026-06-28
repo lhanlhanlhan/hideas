@@ -4,12 +4,10 @@ Hideas is a personal cognitive system for managing memory traces, stable entitie
 
 It is currently built for personal use. The goal is not to become a large knowledge-management platform, but to provide a small, portable, inspectable system for recording and retrieving personal memory.
 
-Hideas provides:
+Hideas is split into:
 
-- A `hideas` CLI for local and remote access
-- A SQLite-backed personal memory database
-- A `hideas serve` mode that exposes standard HTTP APIs
-- A remote client mode where the CLI talks to a Hideas HTTP server
+- A `hideas serve` HTTP server backed by a SQLite-backed personal memory database.
+- A `hideas` CLI that always operates as a client of a hideas server. The CLI does not read SQLite directly.
 
 The HTTP API is intentionally documented as a first-class interface. You can build a Hideas client without using the CLI.
 
@@ -56,27 +54,25 @@ The project uses `github.com/mattn/go-sqlite3`, so cgo is required.
 
 ## Quick Start
 
-Initialize the local database:
+The CLI is a client. To use it, point it at a hideas server and log in.
 
 ```bash
-hideas init
+hideas login --server https://example.com/hideas/
 ```
 
-Add an entity:
+`hideas login` prints an authorization URL. Open it in your browser and complete the SSO sign-in. Then run any hideas command (or `hideas auth status`) and the CLI will pick up the issued token automatically.
+
+For an interactive script, use `--wait` to block until the browser flow completes:
+
+```bash
+hideas login --wait
+```
+
+After login:
 
 ```bash
 hideas entity add "李雷" --type person
-```
-
-Add a trace:
-
-```bash
 hideas add "今天和李雷讨论了记忆系统，决定先用 SQLite。" --type thought --entity "李雷"
-```
-
-Search:
-
-```bash
 hideas search "SQLite"
 hideas search "Skill Q2 规划"
 hideas search "Skill Q2 规划" --literal
@@ -114,91 +110,54 @@ hideas entity add --help
 hideas --version
 ```
 
-## Operating Modes
+## Server Mode
 
-### Local Mode
-
-Local mode is the default. Commands read and write the local SQLite database directly.
+Run a Hideas server. Server configuration lives entirely in the config file or in `HIDEAS_SSO_*` environment variables; `hideas serve` only accepts `--config`.
 
 ```bash
-hideas search "SQLite"
+hideas serve
+hideas serve --config /etc/hideas/config
 ```
 
-The default database path is an OS user data path:
+A minimal server config:
 
-```text
-macOS:   ~/Library/Application Support/hideas/hideas.sqlite
-Linux:   $XDG_DATA_HOME/hideas/hideas.sqlite
-Linux fallback: ~/.local/share/hideas/hideas.sqlite
-Windows: %APPDATA%\hideas\hideas.sqlite
+```toml
+db = "/var/lib/hideas/hideas.sqlite"
+host = "0.0.0.0"
+port = 8765
+base_path = "/hideas/"
+
+# Optional: static bearer token for CI / self-tests.
+token = "..."
+
+[sso]
+issuer       = "https://sso.example.com/oauth"
+client_id    = "your_client_id"
+client_secret = "your_client_secret"
+redirect_url = "https://hideas.example.com/hideas/api/v1/auth/callback"
+# scopes is optional; defaults to "openid profile email".
 ```
 
-You can override it:
+`redirect_url` must end with `<base_path>/api/v1/auth/callback`. The server validates this on startup. Register the same URL with your SSO administrator.
 
-```bash
-hideas --db /path/to/hideas.sqlite search "SQLite"
-HIDEAS_DB=/path/to/hideas.sqlite hideas search "SQLite"
-```
+## Client Configuration
 
-### Server Mode
+The CLI also reads `~/.hideas/config`. After a successful `hideas login`, the CLI writes the server URL there automatically.
 
-Run Hideas as an HTTP server:
-
-```bash
-hideas serve --host 127.0.0.1 --port 8765
-```
-
-Mount under a base path:
-
-```bash
-hideas serve --base-path /hideas/
-```
-
-With a static token:
-
-```bash
-hideas serve --host 0.0.0.0 --token "$HIDEAS_TOKEN"
-```
-
-With SSH login enabled:
-
-```bash
-hideas serve --host 0.0.0.0 --authorized-keys "$HOME/.hideas/authorized_keys"
-```
-
-### Remote Client Mode
-
-Use a remote Hideas server as the data source:
-
-```bash
-hideas --server https://example.com/hideas/ search "SQLite"
-```
-
-Or through config:
-
-```text
-mode = "remote-client"
-server = "https://example.com/hideas/"
-identity = "~/.ssh/id_ed25519"
+```toml
+server      = "https://example.com/hideas/"
 credentials = "~/.hideas/credentials.json"
 ```
 
-Default config path:
+`credentials.json` is created with `0600` permissions and stores the issued session token and any pending login session.
+
+CLI configuration precedence:
 
 ```text
-$HOME/.hideas/config
+CLI flag > environment variable > config file
 ```
 
-Login once with an SSH private key:
-
-```bash
-hideas login --server https://example.com/hideas/ --identity ~/.ssh/id_ed25519
-hideas auth status --server https://example.com/hideas/
-hideas status
-hideas version
-```
-
-The issued bearer token is stored in a separate credentials file. The config file stores the default mode, remote server prefix, and credentials path. `hideas version` queries the remote server version when running in remote client mode.
+Environment variables: `HIDEAS_SERVER`, `HIDEAS_TOKEN`, `HIDEAS_CONFIG`, `HIDEAS_CREDENTIALS`.
 
 ## HTTP API
 
@@ -208,13 +167,7 @@ Hideas exposes a v1.0 HTTP API under:
 /api/v1
 ```
 
-When using:
-
-```bash
-hideas serve --base-path /hideas/
-```
-
-the API prefix becomes:
+When using `base_path = "/hideas/"` the prefix becomes:
 
 ```text
 /hideas/api/v1

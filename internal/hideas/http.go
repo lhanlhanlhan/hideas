@@ -11,10 +11,10 @@ package hideas
 
 import (
 	"bytes"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"io"
 	"net/http"
 	"net/url"
@@ -38,8 +38,10 @@ func NewHTTPHandler(store Store, auth *serverAuth, basePath string) http.Handler
 	mux := http.NewServeMux()
 	api := &apiServer{store: store, auth: auth}
 	prefix := normalizeBasePath(basePath) + "api/v1"
-	mux.Handle(prefix+"/auth/challenge", api.wrapPublic(api.authChallenge))
-	mux.Handle(prefix+"/auth/login", api.wrapPublic(api.authLogin))
+	mux.Handle(prefix+"/auth/login/start", api.wrapPublic(api.authLoginStart))
+	mux.Handle(prefix+"/auth/login/poll", api.wrapPublic(api.authLoginPoll))
+	mux.Handle(prefix+"/auth/callback", http.HandlerFunc(api.authCallback))
+	mux.Handle(prefix+"/auth/me", api.wrap(api.authMe))
 	mux.Handle(prefix+"/health", api.wrap(api.health))
 	mux.Handle(prefix+"/version", api.wrapPublic(api.version))
 	mux.Handle(prefix+"/traces", api.wrap(api.traces))
@@ -132,33 +134,88 @@ func codeForError(err error) string {
 	}
 }
 
-func (a *apiServer) authChallenge(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+func (a *apiServer) authLoginStart(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 	if r.Method != http.MethodPost {
 		return nil, fmt.Errorf("unsupported method")
 	}
 	if a.auth == nil {
-		return nil, errors.New("ssh login is not configured")
+		return nil, errors.New("sso login is not configured")
 	}
-	return a.auth.issueChallenge()
+	return a.auth.loginStart()
 }
 
-func (a *apiServer) authLogin(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+func (a *apiServer) authLoginPoll(w http.ResponseWriter, r *http.Request) (interface{}, error) {
 	if r.Method != http.MethodPost {
 		return nil, fmt.Errorf("unsupported method")
 	}
 	var in struct {
-		ChallengeID string `json:"challenge_id"`
-		PublicKey   string `json:"public_key"`
-		Signature   string `json:"signature"`
+		SessionID string `json:"session_id"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&in); err != nil {
 		return nil, err
 	}
-	sig, err := base64.StdEncoding.DecodeString(in.Signature)
-	if err != nil {
-		return nil, errors.New("invalid signature")
+	if strings.TrimSpace(in.SessionID) == "" {
+		return nil, errors.New("session_id is required")
 	}
-	return a.auth.login(in.ChallengeID, in.PublicKey, sig)
+	return a.auth.loginPoll(in.SessionID)
+}
+
+// authCallback is the SSO redirect target. Browsers, not API clients, hit this
+// endpoint, so it intentionally returns a small HTML page instead of the JSON
+// envelope used elsewhere.
+func (a *apiServer) authCallback(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	state := q.Get("state")
+	code := q.Get("code")
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	if errParam := q.Get("error"); errParam != "" {
+		desc := q.Get("error_description")
+		w.WriteHeader(http.StatusBadRequest)
+		writeCallbackHTML(w, false, fmt.Sprintf("%s: %s", errParam, desc))
+		return
+	}
+	if state == "" || code == "" {
+		w.WriteHeader(http.StatusBadRequest)
+		writeCallbackHTML(w, false, "missing state or code")
+		return
+	}
+	if a.auth == nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeCallbackHTML(w, false, "sso login is not configured")
+		return
+	}
+	if err := a.auth.loginCallback(r.Context(), state, code); err != nil {
+		w.WriteHeader(http.StatusBadRequest)
+		writeCallbackHTML(w, false, err.Error())
+		return
+	}
+	writeCallbackHTML(w, true, "")
+}
+
+func writeCallbackHTML(w io.Writer, ok bool, msg string) {
+	if ok {
+		_, _ = io.WriteString(w, "<!doctype html><meta charset=\"utf-8\"><title>Hideas login</title><body style=\"font-family:system-ui;padding:2rem\"><h1>授权完成</h1><p>可以关闭此窗口，回到终端继续。</p></body>")
+		return
+	}
+	_, _ = io.WriteString(w, "<!doctype html><meta charset=\"utf-8\"><title>Hideas login</title><body style=\"font-family:system-ui;padding:2rem\"><h1>授权失败</h1><p>")
+	_, _ = io.WriteString(w, html.EscapeString(msg))
+	_, _ = io.WriteString(w, "</p></body>")
+}
+
+func (a *apiServer) authMe(w http.ResponseWriter, r *http.Request) (interface{}, error) {
+	if r.Method != http.MethodGet {
+		return nil, fmt.Errorf("unsupported method")
+	}
+	if a.auth == nil {
+		return authMeResponse{}, nil
+	}
+	info, ok := a.auth.subjectFor(r.Header.Get("Authorization"))
+	if !ok {
+		// The token was already validated by wrap; this branch covers the static
+		// token case where no subject is bound.
+		return authMeResponse{}, nil
+	}
+	return authMeResponse{Subject: info.Subject, ExpiresAt: info.ExpiresAt.UnixMilli()}, nil
 }
 
 func (a *apiServer) health(w http.ResponseWriter, r *http.Request) (interface{}, error) {
@@ -450,19 +507,21 @@ func (h *HTTPStore) do(method, path string, body interface{}, out interface{}) e
 
 func errorsFromAPI(msg string) error { return fmt.Errorf("%s", msg) }
 
-func (h *HTTPStore) AuthChallenge() (authChallengeResponse, error) {
-	var out authChallengeResponse
-	err := h.do(http.MethodPost, "/auth/challenge", map[string]string{"client": "hideas-cli"}, &out)
+func (h *HTTPStore) AuthLoginStart() (authLoginStartResponse, error) {
+	var out authLoginStartResponse
+	err := h.do(http.MethodPost, "/auth/login/start", map[string]string{"client": "hideas-cli"}, &out)
 	return out, err
 }
 
-func (h *HTTPStore) AuthLogin(challengeID, publicKey, signature string) (authLoginResponse, error) {
-	var out authLoginResponse
-	err := h.do(http.MethodPost, "/auth/login", map[string]string{
-		"challenge_id": challengeID,
-		"public_key":   publicKey,
-		"signature":    signature,
-	}, &out)
+func (h *HTTPStore) AuthLoginPoll(sessionID string) (authLoginPollResponse, error) {
+	var out authLoginPollResponse
+	err := h.do(http.MethodPost, "/auth/login/poll", map[string]string{"session_id": sessionID}, &out)
+	return out, err
+}
+
+func (h *HTTPStore) AuthMe() (authMeResponse, error) {
+	var out authMeResponse
+	err := h.do(http.MethodGet, "/auth/me", nil, &out)
 	return out, err
 }
 
