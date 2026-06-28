@@ -121,18 +121,44 @@ echo "hideas deployment configuration"
 echo "==============================="
 echo
 
-if [ -n "$DEPLOY_DIR_ARG" ]; then
-    DEPLOY_DIR=$DEPLOY_DIR_ARG
-else
-    DEPLOY_DIR=$(prompt_required "Deployment directory (config + docker-compose.yml + data/ live here)")
+REUSE_EXISTING=no
+# If the script is invoked from a directory that already contains a previous
+# deployment (both files present), offer to reuse it instead of asking every
+# question again. This is the common path when the operator just wants to
+# rebuild the image or bring the stack up.
+if [ -z "$DEPLOY_DIR_ARG" ] && [ -f "$(pwd)/config" ] && [ -f "$(pwd)/docker-compose.yml" ]; then
+    echo "Found an existing deployment in: $(pwd)"
+    echo "  - config"
+    echo "  - docker-compose.yml"
+    REUSE_ANS=$(prompt_yes_no "Reuse this directory and skip configuration?" "y")
+    if [ "$REUSE_ANS" = "yes" ]; then
+        REUSE_EXISTING=yes
+        DEPLOY_DIR=$(pwd)
+    fi
 fi
-case "$DEPLOY_DIR" in
-    /*) : ;;
-    ~/*|"~") DEPLOY_DIR="${HOME}${DEPLOY_DIR#~}" ;;
-    *)  DEPLOY_DIR="$(pwd)/$DEPLOY_DIR" ;;
-esac
+
+if [ "$REUSE_EXISTING" = "no" ]; then
+    if [ -n "$DEPLOY_DIR_ARG" ]; then
+        DEPLOY_DIR=$DEPLOY_DIR_ARG
+    else
+        DEPLOY_DIR=$(prompt_required "Deployment directory (config + docker-compose.yml + data/ live here)")
+    fi
+    case "$DEPLOY_DIR" in
+        /*) : ;;
+        ~/*|"~") DEPLOY_DIR="${HOME}${DEPLOY_DIR#~}" ;;
+        *)  DEPLOY_DIR="$(pwd)/$DEPLOY_DIR" ;;
+    esac
+fi
 echo "Deployment directory: ${DEPLOY_DIR}"
 echo
+
+CONFIG_PATH="$DEPLOY_DIR/config"
+COMPOSE_PATH="$DEPLOY_DIR/docker-compose.yml"
+
+if [ "$REUSE_EXISTING" = "yes" ]; then
+    echo "Reusing existing ${CONFIG_PATH} and ${COMPOSE_PATH}."
+    echo
+else
 
 PUBLIC_BASE_URL=$(prompt_required "Public base URL the SSO will redirect to (e.g. https://hideas.example.com/hideas/)")
 PUBLIC_BASE_URL=$(trim_trailing_slash "$PUBLIC_BASE_URL")
@@ -168,9 +194,6 @@ fi
 REDIRECT_URL="${PUBLIC_BASE_URL}${BASE_PATH#/}api/v1/auth/callback"
 
 mkdir -p "$DEPLOY_DIR" "$DEPLOY_DIR/data"
-
-CONFIG_PATH="$DEPLOY_DIR/config"
-COMPOSE_PATH="$DEPLOY_DIR/docker-compose.yml"
 
 # Escape backslashes and double quotes for safe TOML emission.
 toml_escape() {
@@ -220,6 +243,8 @@ if [ -n "$STATIC_TOKEN" ]; then
     echo "written to ${CONFIG_PATH}):"
     echo "  ${STATIC_TOKEN}"
 fi
+
+fi  # end of REUSE_EXISTING=no branch
 
 BUILD_NOW=$(prompt_yes_no "Build the Docker image now (${IMAGE_NAME})?" "y")
 if [ "$BUILD_NOW" = "yes" ]; then
