@@ -291,7 +291,13 @@ if [ "$START_NOW" = "yes" ]; then
         echo "  cd ${DEPLOY_DIR} && docker compose up -d" >&2
         exit 1
     fi
-    (cd "$DEPLOY_DIR" && $compose_cmd up -d --force-recreate)
+    # docker-compose v1 + recent Docker Engine raises KeyError 'ContainerConfig'
+    # on `up --force-recreate` because the engine no longer returns the
+    # legacy ContainerConfig field that compose v1 indexes blindly. Bringing
+    # the stack down first sidesteps the recreate code path entirely; the
+    # subsequent `up` always creates a fresh container with the latest image.
+    (cd "$DEPLOY_DIR" && $compose_cmd down --remove-orphans 2>/dev/null || true)
+    (cd "$DEPLOY_DIR" && $compose_cmd up -d)
     echo
     echo "Stack started. Useful next commands:"
     echo "  ${compose_cmd} -f ${COMPOSE_PATH} logs -f"
