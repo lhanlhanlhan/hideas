@@ -667,7 +667,7 @@ func TestSSOLoginCallbackErrors(t *testing.T) {
 	if resp.StatusCode != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d body=%s", resp.StatusCode, body)
 	}
-	if !strings.Contains(string(body), "授权失败") {
+	if !strings.Contains(string(body), "Authorization failed") {
 		t.Fatalf("expected failure HTML, got %s", body)
 	}
 }

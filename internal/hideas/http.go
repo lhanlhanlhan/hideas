@@ -194,10 +194,10 @@ func (a *apiServer) authCallback(w http.ResponseWriter, r *http.Request) {
 
 func writeCallbackHTML(w io.Writer, ok bool, msg string) {
 	if ok {
-		_, _ = io.WriteString(w, "<!doctype html><meta charset=\"utf-8\"><title>Hideas login</title><body style=\"font-family:system-ui;padding:2rem\"><h1>授权完成</h1><p>可以关闭此窗口，回到终端继续。</p></body>")
+		_, _ = io.WriteString(w, "<!doctype html><meta charset=\"utf-8\"><title>Hideas login</title><body style=\"font-family:system-ui;padding:2rem\"><h1>Authorization complete</h1><p>You can close this window and return to your terminal.</p></body>")
 		return
 	}
-	_, _ = io.WriteString(w, "<!doctype html><meta charset=\"utf-8\"><title>Hideas login</title><body style=\"font-family:system-ui;padding:2rem\"><h1>授权失败</h1><p>")
+	_, _ = io.WriteString(w, "<!doctype html><meta charset=\"utf-8\"><title>Hideas login</title><body style=\"font-family:system-ui;padding:2rem\"><h1>Authorization failed</h1><p>")
 	_, _ = io.WriteString(w, html.EscapeString(msg))
 	_, _ = io.WriteString(w, "</p></body>")
 }
