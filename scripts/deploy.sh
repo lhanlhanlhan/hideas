@@ -267,7 +267,10 @@ if [ "$BUILD_NOW" = "yes" ]; then
         echo "failed to fetch Dockerfile from ${REPO}@${REF}" >&2
         exit 1
     fi
-    docker build \
+    # --no-cache is mandatory here: the only RUN step that downloads the
+    # release tarball is text-identical across versions, so Docker would
+    # happily reuse a stale layer that pinned an older binary.
+    docker build --no-cache \
         --build-arg HIDEAS_VERSION="$HIDEAS_VERSION" \
         --build-arg HIDEAS_REPO="$HIDEAS_REPO" \
         -t "$IMAGE_NAME" \
@@ -288,7 +291,7 @@ if [ "$START_NOW" = "yes" ]; then
         echo "  cd ${DEPLOY_DIR} && docker compose up -d" >&2
         exit 1
     fi
-    (cd "$DEPLOY_DIR" && $compose_cmd up -d)
+    (cd "$DEPLOY_DIR" && $compose_cmd up -d --force-recreate)
     echo
     echo "Stack started. Useful next commands:"
     echo "  ${compose_cmd} -f ${COMPOSE_PATH} logs -f"
