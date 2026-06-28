@@ -194,6 +194,10 @@ fi
 REDIRECT_URL="${PUBLIC_BASE_URL}${BASE_PATH#/}api/v1/auth/callback"
 
 mkdir -p "$DEPLOY_DIR" "$DEPLOY_DIR/data"
+# Lock the deployment directory to the host operator. The config file inside
+# stays world-readable (0644) so the container's non-root user can read it
+# through the bind mount; secrecy is enforced by this directory's 0700 mode.
+chmod 700 "$DEPLOY_DIR"
 
 # Escape backslashes and double quotes for safe TOML emission.
 toml_escape() {
@@ -217,7 +221,11 @@ toml_escape() {
     echo "redirect_url = \"$(toml_escape "$REDIRECT_URL")\""
     echo "scopes = \"$(toml_escape "$SSO_SCOPES")\""
 } > "$CONFIG_PATH"
-chmod 600 "$CONFIG_PATH"
+# 0644: the file is mounted read-only into the container, where hideas runs as
+# a non-root user with a different UID than the host operator. Keep the file
+# world-readable on the host; protect secrets by locking down the deployment
+# directory itself (the script chmods it to 0700 below).
+chmod 644 "$CONFIG_PATH"
 
 {
     echo "services:"
