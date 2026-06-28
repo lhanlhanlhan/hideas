@@ -243,13 +243,25 @@ fi
 
 START_NOW=$(prompt_yes_no "Start the stack with docker compose now?" "n")
 if [ "$START_NOW" = "yes" ]; then
-    (cd "$DEPLOY_DIR" && docker compose up -d)
+    # Prefer the Compose v2 plugin (`docker compose`). Fall back to the legacy
+    # standalone binary (`docker-compose`) when the plugin is not installed.
+    if docker compose version >/dev/null 2>&1; then
+        compose_cmd="docker compose"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        compose_cmd="docker-compose"
+    else
+        echo "Neither 'docker compose' (v2 plugin) nor 'docker-compose' (v1) is" >&2
+        echo "available. Install one and rerun:" >&2
+        echo "  cd ${DEPLOY_DIR} && docker compose up -d" >&2
+        exit 1
+    fi
+    (cd "$DEPLOY_DIR" && $compose_cmd up -d)
     echo
     echo "Stack started. Useful next commands:"
-    echo "  docker compose -f ${COMPOSE_PATH} logs -f"
-    echo "  docker compose -f ${COMPOSE_PATH} down"
+    echo "  ${compose_cmd} -f ${COMPOSE_PATH} logs -f"
+    echo "  ${compose_cmd} -f ${COMPOSE_PATH} down"
 else
     echo
     echo "To start later:"
-    echo "  cd ${DEPLOY_DIR} && docker compose up -d"
+    echo "  cd ${DEPLOY_DIR} && docker compose up -d   # or: docker-compose up -d"
 fi
