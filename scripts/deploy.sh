@@ -227,18 +227,28 @@ toml_escape() {
 # directory itself (the script chmods it to 0700 below).
 chmod 644 "$CONFIG_PATH"
 
+host_uid=$(id -u)
+host_gid=$(id -g)
+
 {
     echo "services:"
     echo "  hideas:"
     echo "    image: $IMAGE_NAME"
     echo "    container_name: hideas"
     echo "    restart: unless-stopped"
+    # Run as the host operator so the bind-mounted ./data directory is
+    # writable inside the container regardless of what UID the image baked in.
+    echo "    user: \"${host_uid}:${host_gid}\""
     echo "    ports:"
     echo "      - \"${PUBLISH_PORT}:${PORT}\""
     echo "    volumes:"
     echo "      - ./config:/etc/hideas/config:ro"
     echo "      - ./data:/data"
 } > "$COMPOSE_PATH"
+
+# Make sure the data directory is owned by the same UID that the container
+# will run as, so sqlite can create the database file on first start.
+chown -R "${host_uid}:${host_gid}" "$DEPLOY_DIR/data" 2>/dev/null || true
 
 echo
 echo "Wrote ${CONFIG_PATH}"
