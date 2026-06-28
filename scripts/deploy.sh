@@ -1,17 +1,15 @@
 #!/usr/bin/env sh
 # scripts/deploy.sh
 #
-# Interactive deployment helper for hideas. Asks the operator for SSO and
-# binding details, renders a TOML config file and a docker-compose.yml, builds
-# the Docker image, and optionally starts the stack with `docker compose up -d`.
+# Interactive deployment helper for hideas. Asks the operator for the
+# deployment directory, SSO, and binding details, renders a TOML config file
+# and a docker-compose.yml, builds the Docker image, and optionally starts the
+# stack with `docker compose up -d`.
 #
-# Usage:
-#   ./scripts/deploy.sh <deployment-dir>
-#
-# Examples:
-#   ./scripts/deploy.sh /opt/hideas
-#   ./scripts/deploy.sh /srv/hideas
-#   ./scripts/deploy.sh "$HOME/hideas-server"
+# Usage (run locally or via curl | sh):
+#   curl -fsSL https://raw.githubusercontent.com/lhanlhanlhan/hideas/main/scripts/deploy.sh | sh
+#   ./scripts/deploy.sh
+#   ./scripts/deploy.sh /opt/hideas        # optional explicit deployment dir
 #
 # All generated files are placed under the deployment directory:
 #   <dir>/config            hideas config consumed by `hideas serve`
@@ -19,31 +17,38 @@
 #   <dir>/data/             persistent SQLite database directory
 #
 # The script is POSIX sh; it relies on docker (with the compose plugin) being
-# installed on the host.
+# installed on the host. When run via `curl | sh`, it does NOT require a local
+# clone of the hideas repository — the Dockerfile is fetched from GitHub on
+# demand.
 
 set -eu
 
+REPO_DEFAULT="lhanlhanlhan/hideas"
+REPO=${HIDEAS_REPO:-$REPO_DEFAULT}
+REF=${HIDEAS_REF:-main}
+IMAGE_NAME=${HIDEAS_IMAGE:-hideas:latest}
+
 usage() {
     cat >&2 <<'EOF'
-Usage: ./scripts/deploy.sh <deployment-dir>
+Usage:
+  curl -fsSL https://raw.githubusercontent.com/lhanlhanlhan/hideas/main/scripts/deploy.sh | sh
+  ./scripts/deploy.sh [deployment-dir]
 
-  <deployment-dir> is required. It is where the generated config,
-  docker-compose.yml, and SQLite data volume will live. Pick a location you own
-  and intend to persist, e.g. /opt/hideas, /srv/hideas, or $HOME/hideas-server.
+Environment:
+  HIDEAS_REPO   GitHub repo to fetch release & Dockerfile from
+                (default: lhanlhanlhan/hideas)
+  HIDEAS_REF    Git ref to fetch Dockerfile from (default: main)
+  HIDEAS_IMAGE  Docker image tag to build (default: hideas:latest)
 EOF
 }
 
-if [ "$#" -lt 1 ] || [ -z "$1" ]; then
-    usage
-    exit 2
+if [ "$#" -ge 1 ]; then
+    case "$1" in
+        -h|--help) usage; exit 0 ;;
+    esac
 fi
-case "$1" in
-    -h|--help) usage; exit 0 ;;
-esac
 
-REPO_ROOT=$(cd "$(dirname "$0")/.." && pwd)
-DEPLOY_DIR=$1
-IMAGE_NAME=${HIDEAS_IMAGE:-hideas:latest}
+DEPLOY_DIR_ARG=${1:-}
 
 prompt() {
     label=$1
@@ -114,6 +119,18 @@ trim_trailing_slash() {
 echo
 echo "hideas deployment configuration"
 echo "==============================="
+echo
+
+if [ -n "$DEPLOY_DIR_ARG" ]; then
+    DEPLOY_DIR=$DEPLOY_DIR_ARG
+else
+    DEPLOY_DIR=$(prompt_required "Deployment directory (config + docker-compose.yml + data/ live here)")
+fi
+case "$DEPLOY_DIR" in
+    /*) : ;;
+    ~/*|"~") DEPLOY_DIR="${HOME}${DEPLOY_DIR#~}" ;;
+    *)  DEPLOY_DIR="$(pwd)/$DEPLOY_DIR" ;;
+esac
 echo "Deployment directory: ${DEPLOY_DIR}"
 echo
 
@@ -207,12 +224,21 @@ fi
 BUILD_NOW=$(prompt_yes_no "Build the Docker image now (${IMAGE_NAME})?" "y")
 if [ "$BUILD_NOW" = "yes" ]; then
     HIDEAS_VERSION=$(prompt "Release version to fetch (or 'latest')" "latest")
-    HIDEAS_REPO=$(prompt "GitHub repo to fetch the release from" "lhanlhanlhan/hideas")
+    HIDEAS_REPO=$(prompt "GitHub repo to fetch the release from" "$REPO")
+    # Build a tiny context containing only the Dockerfile, fetched from GitHub
+    # when the script is run via `curl | sh` outside a clone. The Dockerfile
+    # itself pulls the prebuilt release tarball at image build time.
+    build_ctx=$(mktemp -d)
+    trap 'rm -rf "$build_ctx"' EXIT INT TERM
+    if ! curl -fsSL "https://raw.githubusercontent.com/${REPO}/${REF}/Dockerfile" -o "$build_ctx/Dockerfile"; then
+        echo "failed to fetch Dockerfile from ${REPO}@${REF}" >&2
+        exit 1
+    fi
     docker build \
         --build-arg HIDEAS_VERSION="$HIDEAS_VERSION" \
         --build-arg HIDEAS_REPO="$HIDEAS_REPO" \
         -t "$IMAGE_NAME" \
-        "$REPO_ROOT"
+        "$build_ctx"
 fi
 
 START_NOW=$(prompt_yes_no "Start the stack with docker compose now?" "n")

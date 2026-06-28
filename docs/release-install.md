@@ -51,16 +51,18 @@ The installer detects the local OS and architecture, downloads the matching rele
 ## Server Deployment
 
 The repository ships a `Dockerfile` and an interactive helper for deploying the
-server side via Docker Compose:
+server side via Docker Compose. The helper can be run from a clone or directly
+via `curl | sh`:
 
 ```bash
-./scripts/deploy.sh /opt/hideas        # or any directory you own
-./scripts/deploy.sh "$HOME/hideas-server"
+curl -fsSL https://raw.githubusercontent.com/lhanlhanlhan/hideas/main/scripts/deploy.sh | sh
+./scripts/deploy.sh                    # interactive, asks for deployment dir
+./scripts/deploy.sh /opt/hideas        # or pass the dir explicitly
 ```
 
-The deployment directory argument is required. The script refuses to invent a
-default path under the repository or under `$HOME`. Pick a location you own and
-intend to persist; the script will create it if needed.
+The script asks for the deployment directory (where `config`,
+`docker-compose.yml`, and the SQLite `data/` volume live) before any other
+question. Pick a location you own and intend to persist.
 
 The script asks for the public base URL, base path, host/port, SSO issuer,
 SSO `client_id` / `client_secret`, scopes, and whether to generate a static
